@@ -7,12 +7,12 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "db:migrate": "tsx scripts/migrate.ts",
-    "hs:stages": "tsx scripts/fetch-hs-stages.ts"
+    "hs:stages": "tsx scripts/fetch-hs-stages.ts",
+    "hs:test-fetch": "tsx scripts/test-hs-fetch.ts"
   },
   "dependencies": {
     "bullmq": "^5.4.2",
     "fastify": "^4.26.2",
-    "ioredis": "^5.3.2",
     "pg": "^8.11.3",
     "zod": "^3.22.4"
   },

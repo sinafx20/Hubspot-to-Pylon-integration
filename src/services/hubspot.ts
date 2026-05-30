@@ -27,14 +27,13 @@ const CONTACT_PROPS = [
   'email',
   'phone',
   'mobilephone',
+  'install_address',
   'address',
   'city',
   'state',
   'zip',
   'country',
   'company',
-  // Add any custom solar contact properties your client uses, e.g.:
-  // 'electricity_bill', 'roof_type', 'property_type'
 ].join(',')
 
 const DEAL_PROPS = [
@@ -56,12 +55,27 @@ export interface HubSpotContact {
     email?: string
     phone?: string
     mobilephone?: string
+    install_address?: string
     address?: string
     city?: string
     state?: string
     zip?: string
     country?: string
     company?: string
+    [key: string]: string | undefined
+  }
+}
+
+export interface HubSpotCompany {
+  id: string
+  properties: {
+    name?: string
+    address?: string
+    city?: string
+    state?: string
+    zip?: string
+    country?: string
+    phone?: string
     [key: string]: string | undefined
   }
 }
@@ -92,6 +106,19 @@ export async function getAssociatedContact(dealId: string): Promise<HubSpotConta
 
   const contactId = assoc.results[0].id
   return request<HubSpotContact>('GET', `/crm/v3/objects/contacts/${contactId}?properties=${CONTACT_PROPS}`)
+}
+
+const COMPANY_PROPS = ['name', 'address', 'city', 'state', 'zip', 'country', 'phone'].join(',')
+
+export async function getAssociatedCompany(dealId: string): Promise<HubSpotCompany | null> {
+  const assoc = await request<{ results: { id: string }[] }>(
+    'GET',
+    `/crm/v3/objects/deals/${dealId}/associations/companies`
+  )
+  if (!assoc.results.length) return null
+
+  const companyId = assoc.results[0].id
+  return request<HubSpotCompany>('GET', `/crm/v3/objects/companies/${companyId}?properties=${COMPANY_PROPS}`)
 }
 
 export async function updateDealStage(dealId: string, stageId: string): Promise<void> {

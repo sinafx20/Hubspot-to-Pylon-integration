@@ -10,7 +10,7 @@ interface HubSpotWebhookEvent {
   subscriptionId: number
   portalId: number
   occurredAt: number
-  eventType: string
+  subscriptionType: string  // HubSpot uses subscriptionType, not eventType
   objectId: number
   propertyName?: string
   propertyValue?: string
@@ -51,7 +51,7 @@ export async function hubspotWebhookRoute(fastify: FastifyInstance) {
 
     for (const event of events) {
       // We only care about deal stage changes
-      if (event.eventType !== 'deal.propertyChange') continue
+      if (event.subscriptionType !== 'deal.propertyChange') continue
       if (event.propertyName !== 'dealstage') continue
       if (event.propertyValue !== config.HUBSPOT_STAGE_READY_TO_QUOTE) continue
 

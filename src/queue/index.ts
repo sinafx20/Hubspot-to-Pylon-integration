@@ -1,9 +1,7 @@
 import { Queue } from 'bullmq'
-import IORedis from 'ioredis'
 import { config } from '../config'
 
-export const redis = new IORedis(config.REDIS_URL, {
-  maxRetriesPerRequest: null, // required by BullMQ
-})
+// Pass URL string — BullMQ v5 handles maxRetriesPerRequest: null internally
+const connection = { url: config.REDIS_URL }
 
-export const integrationQueue = new Queue('integration', { connection: redis })
+export const integrationQueue = new Queue('integration', { connection })

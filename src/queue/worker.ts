@@ -1,8 +1,10 @@
 import { Worker } from 'bullmq'
-import { redis } from './index'
+import { config } from '../config'
 import { handleCreatePylonProject } from '../jobs/create-pylon-project'
 import { handleUpdateDealQuoteSent } from '../jobs/update-deal-quote-sent'
 import { handleUpdateDealClosedWon } from '../jobs/update-deal-closed-won'
+
+const connection = { url: config.REDIS_URL }
 
 export function startWorker() {
   const worker = new Worker(
@@ -20,7 +22,7 @@ export function startWorker() {
       }
     },
     {
-      connection: redis,
+      connection,
       concurrency: 5,
     }
   )
