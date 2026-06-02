@@ -166,13 +166,29 @@ async function requestVoid(method: string, path: string, body?: unknown): Promis
 
 // Associate two existing objects using HubSpot's default (HUBSPOT_DEFINED) association type,
 // so we never have to hardcode numeric association type IDs.
+// Retries transient HubSpot errors (5xx / 429) — these association calls intermittently
+// return a 500 INTERNAL_ERROR that succeeds on retry.
 async function associateDefault(
   fromType: string,
   fromId: string,
   toType: string,
   toId: string
 ): Promise<void> {
-  await requestVoid('PUT', `/crm/v4/objects/${fromType}/${fromId}/associations/default/${toType}/${toId}`)
+  const path = `/crm/v4/objects/${fromType}/${fromId}/associations/default/${toType}/${toId}`
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await requestVoid('PUT', path)
+      return
+    } catch (err) {
+      const msg = (err as Error).message
+      const transient = /→ (5\d\d|429):/.test(msg) // e.g. "... → 500: ..."
+      if (transient && attempt < 3) {
+        await new Promise((r) => setTimeout(r, attempt * 600))
+        continue
+      }
+      throw err
+    }
+  }
 }
 
 export interface DealLineItem {
@@ -228,11 +244,28 @@ export async function createNote(
     },
   })
 
-  if (associations.dealId) await associateDefault('notes', note.id, 'deals', associations.dealId)
-  if (associations.contactId) await associateDefault('notes', note.id, 'contacts', associations.contactId)
-  if (associations.companyId) await associateDefault('notes', note.id, 'companies', associations.companyId)
-
-  console.log(`[hubspot] Created note ${note.id} on deal=${associations.dealId} contact=${associations.contactId} company=${associations.companyId}`)
+  // Associate to each target independently: a failure on one (e.g. a persistent HubSpot
+  // error) must not orphan the note or block the other associations.
+  const targets: [string, string | undefined][] = [
+    ['deals', associations.dealId],
+    ['contacts', associations.contactId],
+    ['companies', associations.companyId],
+  ]
+  const failed: string[] = []
+  for (const [type, id] of targets) {
+    if (!id) continue
+    try {
+      await associateDefault('notes', note.id, type, id)
+    } catch (err) {
+      failed.push(`${type} ${id}`)
+      console.error(`[hubspot] Note ${note.id} could not associate to ${type} ${id}: ${(err as Error).message}`)
+    }
+  }
+  if (failed.length) {
+    console.warn(`[hubspot] Note ${note.id} created but not linked to: ${failed.join(', ')}`)
+  } else {
+    console.log(`[hubspot] Created note ${note.id} on deal=${associations.dealId} contact=${associations.contactId} company=${associations.companyId}`)
+  }
 }
 
 export async function listPipelines() {
