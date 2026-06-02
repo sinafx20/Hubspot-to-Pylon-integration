@@ -6,6 +6,16 @@ import { startWorker } from './queue/worker'
 
 const server = Fastify({ logger: true })
 
+// Store raw body buffer before parsing so webhook signature verification can use original bytes
+server.addContentTypeParser('application/json', { parseAs: 'buffer' }, (req, body, done) => {
+  ;(req as any).rawBody = body
+  try {
+    done(null, JSON.parse((body as Buffer).toString()))
+  } catch (err) {
+    done(err as Error)
+  }
+})
+
 server.get('/health', async () => ({ status: 'ok' }))
 
 server.register(hubspotWebhookRoute, { prefix: '/webhooks' })

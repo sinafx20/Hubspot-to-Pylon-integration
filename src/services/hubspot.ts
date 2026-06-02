@@ -127,6 +127,114 @@ export async function updateDealStage(dealId: string, stageId: string): Promise<
   })
 }
 
+export async function updateDealProperties(
+  dealId: string,
+  properties: Record<string, string | number>
+): Promise<void> {
+  await request('PATCH', `/crm/v3/objects/deals/${dealId}`, { properties })
+}
+
+// Cache enum option values per process so we only fetch each dropdown's options once.
+const _optionCache = new Map<string, string[]>()
+
+/** Valid option values for an enumeration (dropdown) property, e.g. the allowed panel brands. */
+export async function getEnumOptionValues(objectType: string, propertyName: string): Promise<string[]> {
+  const key = `${objectType}.${propertyName}`
+  const cached = _optionCache.get(key)
+  if (cached) return cached
+  const def = await request<{ options?: { value: string }[] }>(
+    'GET',
+    `/crm/v3/properties/${objectType}/${propertyName}`
+  )
+  const values = (def.options ?? []).map((o) => o.value)
+  _optionCache.set(key, values)
+  return values
+}
+
+// fetch + DELETE/PUT helpers that tolerate empty (204) responses
+async function requestVoid(method: string, path: string, body?: unknown): Promise<void> {
+  const res = await fetch(`${BASE}${path}`, {
+    method,
+    headers: headers(),
+    body: body ? JSON.stringify(body) : undefined,
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(`HubSpot API ${method} ${path} → ${res.status}: ${text}`)
+  }
+}
+
+// Associate two existing objects using HubSpot's default (HUBSPOT_DEFINED) association type,
+// so we never have to hardcode numeric association type IDs.
+async function associateDefault(
+  fromType: string,
+  fromId: string,
+  toType: string,
+  toId: string
+): Promise<void> {
+  await requestVoid('PUT', `/crm/v4/objects/${fromType}/${fromId}/associations/default/${toType}/${toId}`)
+}
+
+export interface DealLineItem {
+  name: string
+  quantity: number
+  price: number // unit price in dollars
+}
+
+/**
+ * Replace ALL line items currently associated with a deal with a fresh set.
+ * Existing line items are archived (deleted), then the new ones are created and associated.
+ */
+export async function overwriteDealLineItems(dealId: string, items: DealLineItem[]): Promise<void> {
+  // 1. Find existing line items on the deal
+  const assoc = await request<{ results: { id: string; toObjectId?: string }[] }>(
+    'GET',
+    `/crm/v3/objects/deals/${dealId}/associations/line_items`
+  )
+
+  // 2. Archive them
+  for (const r of assoc.results) {
+    const lineItemId = r.toObjectId ?? r.id
+    await requestVoid('DELETE', `/crm/v3/objects/line_items/${lineItemId}`)
+  }
+  console.log(`[hubspot] Removed ${assoc.results.length} existing line item(s) from deal ${dealId}`)
+
+  // 3. Create the new line items and associate each to the deal
+  for (const item of items) {
+    const created = await request<{ id: string }>('POST', `/crm/v3/objects/line_items`, {
+      properties: {
+        name: item.name,
+        quantity: String(item.quantity),
+        price: String(item.price),
+      },
+    })
+    await associateDefault('deals', dealId, 'line_items', created.id)
+  }
+  console.log(`[hubspot] Created ${items.length} new line item(s) on deal ${dealId}`)
+}
+
+/**
+ * Create a Note (timeline activity) and associate it to the deal, contact, and company.
+ * hs_note_body accepts simple HTML.
+ */
+export async function createNote(
+  body: string,
+  associations: { dealId?: string; contactId?: string; companyId?: string }
+): Promise<void> {
+  const note = await request<{ id: string }>('POST', `/crm/v3/objects/notes`, {
+    properties: {
+      hs_note_body: body,
+      hs_timestamp: new Date().toISOString(),
+    },
+  })
+
+  if (associations.dealId) await associateDefault('notes', note.id, 'deals', associations.dealId)
+  if (associations.contactId) await associateDefault('notes', note.id, 'contacts', associations.contactId)
+  if (associations.companyId) await associateDefault('notes', note.id, 'companies', associations.companyId)
+
+  console.log(`[hubspot] Created note ${note.id} on deal=${associations.dealId} contact=${associations.contactId} company=${associations.companyId}`)
+}
+
 export async function listPipelines() {
   return request<{ results: { id: string; label: string; stages: { id: string; label: string }[] }[] }>(
     'GET',

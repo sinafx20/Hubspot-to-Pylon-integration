@@ -14,7 +14,7 @@ export async function logEvent(params: {
   eventType: string
   hubspotDealId?: string
   pylonProjectId?: string
-  status: 'queued' | 'success' | 'failed' | 'dead' | 'duplicate'
+  status: 'queued' | 'success' | 'failed' | 'dead' | 'duplicate' | 'skipped'
   errorMessage?: string
 }) {
   await db.query(

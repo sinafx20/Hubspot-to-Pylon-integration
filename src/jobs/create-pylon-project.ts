@@ -23,9 +23,8 @@ export async function handleCreatePylonProject({ dealId, eventId }: JobData) {
     getAssociatedCompany(dealId),
   ])
 
-  console.log('[create-pylon-project] DEAL:', JSON.stringify(deal.properties, null, 2))
-  console.log('[create-pylon-project] CONTACT:', JSON.stringify(contact?.properties ?? null, null, 2))
-  console.log('[create-pylon-project] COMPANY:', JSON.stringify(company?.properties ?? null, null, 2))
+  // Avoid logging full deal/contact/company records — they contain customer PII.
+  console.log(`[create-pylon-project] Fetched deal ${dealId} (contact=${contact?.id ?? 'none'}, company=${company?.id ?? 'none'})`)
 
   if (!contact) {
     console.warn(`[create-pylon-project] Deal ${dealId} has no associated contact — creating project without contact details`)

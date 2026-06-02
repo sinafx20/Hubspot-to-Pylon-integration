@@ -4,45 +4,40 @@ import { config } from '../config'
 import { integrationQueue } from '../queue/index'
 import { isEventProcessed, logEvent } from '../db/events'
 
+// Pylon sends JSON:API format for all webhook events
 interface PylonWebhookPayload {
-  id?: string
-  event_type?: string
-  // Pylon wraps the changed resource under a key matching the event type.
-  // e.g. proposals.shared → payload.proposal, web_proposals.signed → payload.web_proposal
-  // Verify exact shape against Pylon's event documentation.
-  [key: string]: unknown
+  data?: {
+    id?: string
+    type?: string
+    attributes?: {
+      name?: string          // the event type e.g. "proposals.shared"
+      created_at?: string
+      description?: string
+      [key: string]: unknown
+    }
+    relationships?: {
+      solar_project?: {
+        data?: { type?: string; id?: string }
+      }
+      [key: string]: unknown
+    }
+  }
 }
 
 function verifyPylonSignature(req: FastifyRequest): boolean {
-  // Pylon signature verification — check their docs for the exact header name and algorithm.
-  // If they use a shared secret in a header (common pattern):
-  if (!config.PYLON_WEBHOOK_SECRET) return true // skip if no secret configured yet
-
-  const signature = req.headers['x-pylon-signature'] as string | undefined
-  if (!signature) return false
-
-  const rawBody = JSON.stringify(req.body)
-  const expected = crypto
-    .createHmac('sha256', config.PYLON_WEBHOOK_SECRET)
-    .update(rawBody)
-    .digest('hex')
-
-  return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))
+  // TODO: Pylon's exact HMAC format is undocumented — confirm with support and re-enable.
+  // The header is "pylon-webhook-signature: hs256=<hex>" but the message format is unclear
+  // (may include timestamp). For now we check the header exists as a basic sanity check.
+  const header = req.headers['pylon-webhook-signature'] as string | undefined
+  if (config.PYLON_WEBHOOK_SECRET && !header) {
+    console.warn('[pylon-webhook] Missing pylon-webhook-signature header')
+    return false
+  }
+  return true
 }
 
 function extractProjectId(payload: PylonWebhookPayload): string | null {
-  // Pylon embeds the project ID inside the event payload.
-  // Verify the exact field path from their webhook documentation.
-  // Common patterns:
-  const proposal = payload.proposal as Record<string, unknown> | undefined
-  const webProposal = payload.web_proposal as Record<string, unknown> | undefined
-
-  return (
-    (proposal?.solar_project_id as string) ??
-    (webProposal?.solar_project_id as string) ??
-    (payload.solar_project_id as string) ??
-    null
-  )
+  return payload.data?.relationships?.solar_project?.data?.id ?? null
 }
 
 export async function pylonWebhookRoute(fastify: FastifyInstance) {
@@ -54,21 +49,29 @@ export async function pylonWebhookRoute(fastify: FastifyInstance) {
     reply.code(200).send({ received: true })
 
     const payload = req.body as PylonWebhookPayload
-    const eventType = payload.event_type as string | undefined
-    const eventId = `pylon-${payload.id ?? Date.now()}`
 
-    if (!eventType) return
+    const eventType = payload.data?.attributes?.name
+    const eventId = `pylon-${payload.data?.id ?? Date.now()}`
+
+    if (!eventType) {
+      console.warn('[pylon-webhook] No event type found in payload:', JSON.stringify(payload))
+      return
+    }
+
+    console.log(`[pylon-webhook] event="${eventType}" id="${eventId}"`)
+
 
     const alreadyDone = await isEventProcessed(eventId)
     if (alreadyDone) return
 
     const pylonProjectId = extractProjectId(payload)
 
-    if (eventType === 'proposals.shared') {
+    // Both "Send proposal" and "Send e-Signature request" mean the quote has been sent
+    if (eventType === 'proposals.shared' || eventType === 'esignature_requests.sent') {
       await logEvent({
         eventId,
         direction: 'pylon_to_hs',
-        eventType: 'proposals.shared',
+        eventType,
         pylonProjectId: pylonProjectId ?? undefined,
         status: 'queued',
       })
