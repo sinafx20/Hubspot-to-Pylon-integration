@@ -2,6 +2,7 @@ import Fastify from 'fastify'
 import { config } from './config'
 import { hubspotWebhookRoute } from './webhooks/hubspot'
 import { pylonWebhookRoute } from './webhooks/pylon'
+import { dashboardRoute } from './admin/dashboard'
 import { startWorker } from './queue/worker'
 
 const server = Fastify({ logger: true })
@@ -16,10 +17,16 @@ server.addContentTypeParser('application/json', { parseAs: 'buffer' }, (req, bod
   }
 })
 
+// Dashboard Retry/Dismiss buttons submit empty urlencoded forms — accept them (we only use URL params)
+server.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'string' }, (_req, _body, done) => {
+  done(null, {})
+})
+
 server.get('/health', async () => ({ status: 'ok' }))
 
 server.register(hubspotWebhookRoute, { prefix: '/webhooks' })
 server.register(pylonWebhookRoute, { prefix: '/webhooks' })
+server.register(dashboardRoute)
 
 const start = async () => {
   try {
