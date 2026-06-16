@@ -1,7 +1,7 @@
 import { updateDealStage } from '../services/hubspot'
 import { syncQuoteToDeal } from '../services/quote-sync'
 import { getLinkByProjectId } from '../db/links'
-import { logEvent } from '../db/events'
+import { logEvent, hasPriorQuoteSync } from '../db/events'
 import { config } from '../config'
 
 interface JobData {
@@ -36,12 +36,15 @@ export async function handleUpdateDealQuoteSent({ pylonProjectId, eventId }: Job
 
   console.log(`[update-deal-quote-sent] Deal ${link.hubspot_deal_id} moved to Quote Sent`)
 
+  // A re-share of an already-synced quote is a revision — title the note "updated" not "sent".
+  const isUpdate = await hasPriorQuoteSync(pylonProjectId, eventId)
+
   // Best-effort enrichment: line items, system specs, STC/rebate props, and an activity note
   // with the Pylon proposal link. Failures here must not fail the stage move (already done),
   // and must not trigger a retry that would duplicate line items / notes.
   try {
-    await syncQuoteToDeal(link.hubspot_deal_id, pylonProjectId)
-    console.log(`[update-deal-quote-sent] Synced quote details to deal ${link.hubspot_deal_id}`)
+    await syncQuoteToDeal(link.hubspot_deal_id, pylonProjectId, { isUpdate })
+    console.log(`[update-deal-quote-sent] Synced quote details to deal ${link.hubspot_deal_id} (${isUpdate ? 'revision' : 'first send'})`)
   } catch (err) {
     console.error(`[update-deal-quote-sent] Quote enrichment failed for deal ${link.hubspot_deal_id}:`, (err as Error).message)
   }

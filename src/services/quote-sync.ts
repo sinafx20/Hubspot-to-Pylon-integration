@@ -84,7 +84,11 @@ function formatMoney(cents: number, currency: string): string {
  * Each step is isolated: one failing step does not block the others, and none of them
  * fail the (already-completed) deal stage move.
  */
-export async function syncQuoteToDeal(dealId: string, pylonProjectId: string): Promise<void> {
+export async function syncQuoteToDeal(
+  dealId: string,
+  pylonProjectId: string,
+  opts: { isUpdate?: boolean } = {}
+): Promise<void> {
   const design = await getPrimaryDesign(pylonProjectId)
   if (!design) return
 
@@ -141,7 +145,7 @@ export async function syncQuoteToDeal(dealId: string, pylonProjectId: string): P
 
   // 4. Activity note
   await safeStep('activity note', dealId, async () => {
-    await createNote(buildNoteBody(design, { numberOfPanels, panelBrand, inverterBrand, batteryBrand, stcProps }), {
+    await createNote(buildNoteBody(design, { numberOfPanels, panelBrand, inverterBrand, batteryBrand, stcProps, isUpdate: opts.isUpdate }), {
       dealId,
       contactId: contact?.id,
       companyId: company?.id,
@@ -157,10 +161,12 @@ function buildNoteBody(
     inverterBrand?: string
     batteryBrand?: string
     stcProps: Record<string, string | number>
+    isUpdate?: boolean
   }
 ): string {
   const s = design.summary
-  const lines: string[] = ['<strong>Pylon quote sent</strong>']
+  const title = extra.isUpdate ? 'Pylon quote updated (revised)' : 'Pylon quote sent'
+  const lines: string[] = [`<strong>${title}</strong>`]
 
   if (s.description) lines.push(`System: ${s.description}`)
   if (s.dc_output_kw != null) lines.push(`Size: ${s.dc_output_kw} kW`)

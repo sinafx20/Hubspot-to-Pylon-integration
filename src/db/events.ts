@@ -8,6 +8,25 @@ export async function isEventProcessed(eventId: string): Promise<boolean> {
   return result.rows.length > 0
 }
 
+/**
+ * True if this Pylon project has already had a successful quote-sent sync from a *different*
+ * event — i.e. the current event is a re-share/revision rather than the first send. Used to
+ * title the activity note "updated" vs "sent". Excludes the current event id, which the job
+ * logs as success before the enrichment step runs.
+ */
+export async function hasPriorQuoteSync(pylonProjectId: string, currentEventId: string): Promise<boolean> {
+  const result = await db.query(
+    `SELECT 1 FROM sync_events
+       WHERE pylon_project_id = $1
+         AND event_id <> $2
+         AND event_type IN ('proposals.shared', 'esignature_requests.sent')
+         AND status = 'success'
+     LIMIT 1`,
+    [pylonProjectId, currentEventId]
+  )
+  return result.rows.length > 0
+}
+
 export async function logEvent(params: {
   eventId?: string
   direction: 'hs_to_pylon' | 'pylon_to_hs'
