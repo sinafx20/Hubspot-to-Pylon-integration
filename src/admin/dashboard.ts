@@ -1,7 +1,8 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import type { Job } from 'bullmq'
 import { integrationQueue } from '../queue/index'
-import { getDeal } from '../services/hubspot'
+import { getDeal, getAssociatedContact, getAssociatedCompany } from '../services/hubspot'
+import { searchCandidates } from '../services/geocode'
 import { getLinkByProjectId } from '../db/links'
 
 // ---- plain-language helpers (this page is for non-technical staff) ----
@@ -90,19 +91,72 @@ function timeAgo(ms?: number): string {
   return `${days} day${days === 1 ? '' : 's'} ago`
 }
 
+// Resolve the HubSpot deal id behind a failed job (directly, or via the Pylon link).
+async function resolveDealId(job: Job): Promise<string | undefined> {
+  let dealId: string | undefined = job.data?.dealId
+  if (!dealId && job.data?.pylonProjectId) {
+    const link = await getLinkByProjectId(job.data.pylonProjectId)
+    dealId = link?.hubspot_deal_id
+  }
+  return dealId
+}
+
 // Best-effort: find a human-friendly label (deal name) for a failed job.
 async function describeDeal(job: Job): Promise<string> {
   try {
-    let dealId: string | undefined = job.data?.dealId
-    if (!dealId && job.data?.pylonProjectId) {
-      const link = await getLinkByProjectId(job.data.pylonProjectId)
-      dealId = link?.hubspot_deal_id
-    }
+    const dealId = await resolveDealId(job)
     if (!dealId) return job.data?.pylonProjectId ? `Pylon project ${job.data.pylonProjectId}` : 'Unknown deal'
     const deal = await getDeal(dealId)
     return `${deal.properties.dealname ?? 'Deal'} (#${dealId})`
   } catch {
     return job.data?.dealId ? `Deal #${job.data.dealId}` : 'Unknown deal'
+  }
+}
+
+// For a geocode failure, look up the closest real address Nominatim can find and
+// tell staff the exact text to paste into the contact's Install Address in HubSpot.
+// Returns an HTML snippet, or '' if we can't suggest anything.
+async function buildAddressSuggestion(job: Job): Promise<string> {
+  try {
+    const dealId = await resolveDealId(job)
+    if (!dealId) return ''
+    const [contact, company] = await Promise.all([
+      getAssociatedContact(dealId).catch(() => null),
+      getAssociatedCompany(dealId).catch(() => null),
+    ])
+    const c = contact?.properties
+    const co = company?.properties
+
+    const candidates = await searchCandidates({
+      parts: {
+        street: c?.install_address ?? co?.address ?? undefined,
+        city: c?.city ?? co?.city ?? undefined,
+        state: c?.state ?? co?.state ?? undefined,
+        postcode: c?.zip ?? co?.zip ?? undefined,
+      },
+      free: c?.install_address ?? co?.name ?? c?.address ?? co?.address ?? undefined,
+    })
+    if (!candidates.length) return ''
+
+    const top = candidates[0]
+    const note =
+      top.precision === 'rooftop'
+        ? 'This is a confirmed address — paste it exactly into the contact’s <b>Install Address</b> field in HubSpot, then click Retry.'
+        : 'We could only match the suburb, not the exact street. Use this as a guide: fix the street number/name in the contact’s <b>Install Address</b> field in HubSpot so it matches a real address, then click Retry.'
+
+    const alts = candidates
+      .slice(1, 3)
+      .map((alt) => `<li>${esc(alt.display)}</li>`)
+      .join('')
+
+    return `<div class="suggest">
+      <div class="suggest-label">📍 Closest match we found:</div>
+      <div class="suggest-addr">${esc(top.display)}</div>
+      <p class="suggest-note">${note}</p>
+      ${alts ? `<details><summary>Other possible matches</summary><ul>${alts}</ul></details>` : ''}
+    </div>`
+  } catch {
+    return ''
   }
 }
 
@@ -123,6 +177,12 @@ function page(body: string): string {
   .what{margin:0 0 6px;}
   .fix{background:#fff7e6;border:1px solid #ffe2a8;border-radius:8px;padding:10px 12px;font-size:14px;margin:0 0 12px;}
   .fix b{color:#915b00;}
+  .suggest{background:#eef5ff;border:1px solid #c4dbff;border-radius:8px;padding:10px 12px;font-size:14px;margin:0 0 12px;}
+  .suggest-label{color:#0b66c3;font-weight:600;font-size:13px;}
+  .suggest-addr{font-weight:600;margin:4px 0;user-select:all;}
+  .suggest-note{margin:4px 0 0;color:#42566b;font-size:13px;}
+  .suggest details{margin-top:6px;}
+  .suggest ul{margin:6px 0 0;padding-left:18px;color:#42566b;font-size:13px;}
   .btns form{display:inline;}
   button{font-size:14px;padding:8px 16px;border-radius:8px;border:0;cursor:pointer;margin-right:8px;}
   .retry{background:#0b66c3;color:#fff;}
@@ -152,13 +212,20 @@ export async function dashboardRoute(fastify: FastifyInstance) {
     const cards = await Promise.all(
       failed.map(async (job) => {
         const dealLabel = await describeDeal(job)
-        const { what, fix } = explainError(job.failedReason || '')
+        const reason = job.failedReason || ''
+        const { what, fix } = explainError(reason)
+        const isGeocode =
+          reason.toLowerCase().includes('geocode') ||
+          reason.toLowerCase().includes('site_location') ||
+          (reason.toLowerCase().includes('422') && reason.toLowerCase().includes('pylon'))
+        const suggestion = isGeocode ? await buildAddressSuggestion(job) : ''
         return `<div class="card">
           <h2>${esc(friendlyJobTitle(job.name))}</h2>
           <div class="deal">${esc(dealLabel)}</div>
           <div class="meta">Failed ${esc(timeAgo(job.finishedOn))} · tried ${esc(job.attemptsMade)} time(s)</div>
           <p class="what">${esc(what)}</p>
           <div class="fix"><b>What to do:</b> ${esc(fix)}</div>
+          ${suggestion}
           <div class="btns">
             <form method="post" action="/dashboard/retry/${esc(job.id)}"><button class="retry" type="submit">↻ Retry now</button></form>
             <form method="post" action="/dashboard/dismiss/${esc(job.id)}"><button class="dismiss" type="submit">Dismiss</button></form>

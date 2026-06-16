@@ -1,6 +1,6 @@
 import { config } from '../config'
 import type { HubSpotContact, HubSpotCompany, HubSpotDeal } from './hubspot'
-import { geocodeAddress } from './geocode'
+import { geocodeAddress, searchCandidates } from './geocode'
 
 const BASE = 'https://api.getpylon.com/v1'
 
@@ -89,20 +89,37 @@ export async function createSolarProject(
   const payload = buildProjectPayload(deal, contact, company)
 
   // Geocode to get coordinates (required by Pylon).
-  // Try install_address first, then company name (often the full site address), then contact address.
-  const geocodeCandidates = [
-    contact?.properties.install_address,
-    company?.properties.name,
-    contact?.properties.address,
-    company?.properties.address,
-  ].filter(Boolean) as string[]
-
-  for (const candidate of geocodeCandidates) {
-    const coords = await geocodeAddress(candidate)
-    if (coords) {
-      payload.data.attributes.site_location = coords
-      console.log(`[pylon] Geocoded "${candidate}" → [${coords}]`)
-      break
+  // Structured geocoding (street/suburb/state/postcode as separate fields) is much more
+  // robust than a free-text blob and self-recovers from a messy street by falling back
+  // to the suburb centroid — see searchCandidates().
+  const c = contact?.properties
+  const co = company?.properties
+  const structured = await searchCandidates({
+    parts: {
+      street: c?.install_address ?? co?.address ?? undefined,
+      city: c?.city ?? co?.city ?? undefined,
+      state: c?.state ?? co?.state ?? undefined,
+      postcode: c?.zip ?? co?.zip ?? undefined,
+    },
+  })
+  if (structured.length) {
+    payload.data.attributes.site_location = [structured[0].lon, structured[0].lat]
+    console.log(`[pylon] Geocoded (${structured[0].precision}) "${structured[0].display}"`)
+  } else {
+    // Fall back to free-text candidates (e.g. company name often holds the full site address).
+    const freeCandidates = [
+      c?.install_address,
+      co?.name,
+      c?.address,
+      co?.address,
+    ].filter(Boolean) as string[]
+    for (const candidate of freeCandidates) {
+      const coords = await geocodeAddress(candidate)
+      if (coords) {
+        payload.data.attributes.site_location = coords
+        console.log(`[pylon] Geocoded (free-text) "${candidate}" → [${coords}]`)
+        break
+      }
     }
   }
 
