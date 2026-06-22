@@ -44,17 +44,34 @@ export interface PylonProject {
   [key: string]: unknown
 }
 
-// Geocode the deal's site address. Structured geocoding (street/suburb/state/postcode as
-// separate fields) is much more robust than a free-text blob and self-recovers from a messy
-// street by falling back to the suburb centroid. We return the full candidate (not just
-// coords) so the caller can backfill a blank suburb/postcode from the normalised result.
+// Geocode the deal's site address. We return the full candidate (not just coords) so the caller
+// can backfill a blank suburb/postcode from the normalised result.
+//
+// Addresses here typically arrive as ONE free-text line in `install_address` (street + suburb,
+// e.g. "11 Dewpond Dr TRUGANINA"), with the structured city/zip fields blank. So we geocode that
+// line FIRST — it yields the exact rooftop match and the correct suburb. A structured query is a
+// poorer first choice for this data: with only a postcode it returns a coarse centroid (and 3029
+// resolves to Tarneit, not Truganina). Structured is kept as the fallback for the messy case
+// where the line won't resolve but clean city/postcode fields exist (e.g. a wrong suburb typed
+// into the line — Matthew Phelan's "Ingham" that's really Kirwan 4817).
 async function geocodeSite(
   c: HubSpotContact['properties'] | undefined,
   co: HubSpotCompany['properties'] | undefined
 ): Promise<GeoCandidate | null> {
+  // 1. The reliable single-line install address.
+  const line = clean(c?.install_address)
+  if (line) {
+    const [found] = await searchCandidates({ free: line }, 1)
+    if (found) {
+      console.log(`[pylon] Geocoded (free-text) "${line}" → [${found.lon},${found.lat}]`)
+      return found
+    }
+  }
+
+  // 2. Structured fallback — robust when the line is messy/blank but clean city/postcode exist.
   const structured = await searchCandidates({
     parts: {
-      street: clean(c?.install_address) ?? clean(co?.address),
+      street: line ?? clean(co?.address),
       city: clean(c?.city) ?? clean(co?.city),
       state: clean(c?.state) ?? clean(co?.state),
       postcode: clean(c?.zip) ?? clean(co?.zip),
@@ -65,10 +82,8 @@ async function geocodeSite(
     return structured[0]
   }
 
-  // Fall back to free-text candidates (e.g. company name often holds the full site address).
-  const freeCandidates = [c?.install_address, co?.name, c?.address, co?.address]
-    .map(clean)
-    .filter(Boolean) as string[]
+  // 3. Last resort: other free-text candidates (company name often holds the full site address).
+  const freeCandidates = [co?.name, c?.address, co?.address].map(clean).filter(Boolean) as string[]
   for (const candidate of freeCandidates) {
     const [found] = await searchCandidates({ free: candidate }, 1)
     if (found) {
