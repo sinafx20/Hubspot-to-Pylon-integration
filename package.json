@@ -10,7 +10,8 @@
     "hs:stages": "tsx scripts/fetch-hs-stages.ts",
     "hs:test-fetch": "tsx scripts/test-hs-fetch.ts",
     "retrigger": "tsx scripts/retrigger.ts",
-    "audit:addresses": "tsx scripts/audit-addresses.ts"
+    "audit:addresses": "tsx scripts/audit-addresses.ts",
+    "demo:create": "tsx scripts/create-demo-deals.ts"
   },
   "dependencies": {
     "bullmq": "^5.4.2",
