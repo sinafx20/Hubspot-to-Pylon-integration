@@ -79,11 +79,13 @@ async function geocodeSite(
   return null
 }
 
-export async function createSolarProject(
+// Build the Pylon solar_projects payload from HubSpot data (geocoding + validation included).
+// Separated from the POST so it can be dry-run/inspected without writing to Pylon.
+export async function buildSolarProjectPayload(
   deal: HubSpotDeal,
   contact: HubSpotContact | null,
   company: HubSpotCompany | null
-): Promise<PylonProject> {
+) {
   const c = contact?.properties
   const co = company?.properties
 
@@ -126,7 +128,7 @@ export async function createSolarProject(
     )
   }
 
-  const payload = {
+  return {
     data: {
       type: 'solar_projects',
       attributes: {
@@ -138,6 +140,14 @@ export async function createSolarProject(
       },
     },
   }
+}
+
+export async function createSolarProject(
+  deal: HubSpotDeal,
+  contact: HubSpotContact | null,
+  company: HubSpotCompany | null
+): Promise<PylonProject> {
+  const payload = await buildSolarProjectPayload(deal, contact, company)
 
   // Avoid logging the full payload — it contains customer PII (name, email, address).
   console.log(`[pylon] Creating solar project for deal ${deal.id}`)

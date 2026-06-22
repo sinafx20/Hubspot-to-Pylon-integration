@@ -8,7 +8,8 @@
     "start": "node dist/server.js",
     "db:migrate": "tsx scripts/migrate.ts",
     "hs:stages": "tsx scripts/fetch-hs-stages.ts",
-    "hs:test-fetch": "tsx scripts/test-hs-fetch.ts"
+    "hs:test-fetch": "tsx scripts/test-hs-fetch.ts",
+    "retrigger": "tsx scripts/retrigger.ts"
   },
   "dependencies": {
     "bullmq": "^5.4.2",
