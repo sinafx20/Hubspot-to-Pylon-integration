@@ -54,19 +54,30 @@ async function main() {
   let pass = 0
   const fails: string[] = []
 
+  const counts: Record<string, number> = {}
+  const realLog = console.log // geocoder logs precision via console.log; capture it per deal
   for (const d of deals) {
+    let precision = '?'
     try {
       const [deal, contact, company] = await Promise.all([
         getDeal(d.id),
         getAssociatedContact(d.id),
         getAssociatedCompany(d.id),
       ])
+      console.log = (...args: unknown[]) => {
+        const m = String(args[0]).match(/Geocoded \((\w+)\)/)
+        if (m) precision = m[1]
+      }
       const a = (await buildSolarProjectPayload(deal, contact, company)).data.attributes
+      console.log = realLog
+      counts[precision] = (counts[precision] ?? 0) + 1
       const sa: any = a.site_address
       const unit = sa.line2 ? ` [${sa.line2}]` : ''
-      console.log(`✅ ${(d.name || d.id).slice(0, 28).padEnd(28)} → ${sa.city}, ${sa.state} ${sa.zip}${unit}  | "${sa.line1}"`)
+      const mark = precision === 'rooftop' ? '🎯' : precision === 'street' ? '🛣 ' : '📍'
+      console.log(`${mark} ${precision.padEnd(7)} ${(d.name || d.id).slice(0, 24).padEnd(24)} | "${sa.line1}" → ${sa.city} ${sa.zip}${unit}`)
       pass++
     } catch (err) {
+      console.log = realLog
       const msg = (err as Error).message.replace(/\s+/g, ' ').slice(0, 90)
       console.log(`❌ ${(d.name || d.id).slice(0, 28).padEnd(28)} → ${msg}`)
       fails.push(`  "${d.name}" (deal ${d.id}): ${msg}`)
@@ -75,6 +86,7 @@ async function main() {
   }
 
   console.log(`\n===== SUMMARY: ${pass}/${deals.length} would sync =====`)
+  console.log('  pin precision:', Object.entries(counts).map(([k, v]) => `${k}=${v}`).join('  '))
   if (fails.length) {
     console.log('Need attention (data entry — no fixable address):')
     fails.forEach((f) => console.log(f))

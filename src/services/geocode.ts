@@ -72,10 +72,17 @@ export interface GeoCandidate {
   lon: number
   lat: number
   display: string // Nominatim's normalised, correctly-formatted address
-  precision: 'rooftop' | 'suburb' | 'approximate'
+  // Actual match quality of THIS result (derived from the returned address, not the query):
+  // 'rooftop' = exact house, 'street' = road centroid, 'suburb' = locality centroid.
+  precision: 'rooftop' | 'street' | 'suburb'
   // Normalised address parts, used to backfill a blank HubSpot suburb/state/postcode
   // so Pylon (which requires non-empty city + zip) accepts the project.
   components: { city?: string; state?: string; postcode?: string }
+}
+
+// How precise is a Nominatim result, based on what it actually resolved to.
+function precisionOf(a: Record<string, string> = {}): GeoCandidate['precision'] {
+  return a.house_number ? 'rooftop' : a.road ? 'street' : 'suburb'
 }
 
 interface NominatimResult {
@@ -127,38 +134,39 @@ export async function searchCandidates(
 ): Promise<GeoCandidate[]> {
   const { parts, free } = input
 
-  // attempts run in order; first one with results wins
-  const attempts: { params: Record<string, string>; precision: GeoCandidate['precision'] }[] = []
+  // attempts run in order; first one with results wins. Precision is derived from each actual
+  // result (see precisionOf), not assumed from the query.
+  const attempts: Record<string, string>[] = []
 
   if (parts) {
     const street = parts.street?.includes(';') ? parts.street.split(';')[0].trim() : parts.street
-    // 1. full structured (street + suburb + state + postcode) → rooftop-ish
+    // 1. full structured (street + suburb + state + postcode) → aims for rooftop
     const full: Record<string, string> = {}
     if (street) full.street = street
     if (parts.city) full.city = parts.city
     if (parts.state) full.state = parts.state
     if (parts.postcode) full.postalcode = parts.postcode
-    if (full.street && (full.city || full.postalcode)) attempts.push({ params: full, precision: 'rooftop' })
+    if (full.street && (full.city || full.postalcode)) attempts.push(full)
 
     // 2. suburb + postcode only (drop the street) → suburb centroid, good enough for a pin
     const coarse: Record<string, string> = {}
     if (parts.city) coarse.city = parts.city
     if (parts.state) coarse.state = parts.state
     if (parts.postcode) coarse.postalcode = parts.postcode
-    if (coarse.city || coarse.postalcode) attempts.push({ params: coarse, precision: 'suburb' })
+    if (coarse.city || coarse.postalcode) attempts.push(coarse)
   }
 
   // 3. last resort: free text, normalising HubSpot's semicolon separators
-  if (free) attempts.push({ params: { q: free.replace(/;/g, ',') }, precision: 'approximate' })
+  if (free) attempts.push({ q: free.replace(/;/g, ',') })
 
-  for (const { params, precision } of attempts) {
+  for (const params of attempts) {
     const results = await query(params, limit)
     if (results.length) {
       return results.map((r) => ({
         lon: parseFloat(r.lon),
         lat: parseFloat(r.lat),
         display: r.display_name,
-        precision,
+        precision: precisionOf(r.address),
         components: {
           city: pickCity(r.address),
           state: r.address?.state,

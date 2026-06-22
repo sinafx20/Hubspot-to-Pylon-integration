@@ -78,7 +78,7 @@ async function geocodeSite(o: {
     for (const q of queries) {
       const [found] = await searchCandidates({ free: q }, 1)
       if (found) {
-        console.log(`[pylon] Geocoded (free-text) "${q}" → [${found.lon},${found.lat}]`)
+        console.log(`[pylon] Geocoded (${found.precision}) "${q}" → [${found.lon},${found.lat}]`)
         return found
       }
     }
@@ -96,7 +96,7 @@ async function geocodeSite(o: {
   for (const candidate of o.extraFree ?? []) {
     const [found] = await searchCandidates({ free: candidate }, 1)
     if (found) {
-      console.log(`[pylon] Geocoded (free-text) "${candidate}" → [${found.lon},${found.lat}]`)
+      console.log(`[pylon] Geocoded (${found.precision}) "${candidate}" → [${found.lon},${found.lat}]`)
       return found
     }
   }
