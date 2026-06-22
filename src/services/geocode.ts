@@ -13,6 +13,9 @@ export interface GeoCandidate {
   lat: number
   display: string // Nominatim's normalised, correctly-formatted address
   precision: 'rooftop' | 'suburb' | 'approximate'
+  // Normalised address parts, used to backfill a blank HubSpot suburb/state/postcode
+  // so Pylon (which requires non-empty city + zip) accepts the project.
+  components: { city?: string; state?: string; postcode?: string }
 }
 
 interface NominatimResult {
@@ -20,6 +23,11 @@ interface NominatimResult {
   lat: string
   display_name: string
   address?: Record<string, string>
+}
+
+// Pull a human suburb/city out of Nominatim's address object (the key varies by locality).
+function pickCity(a: Record<string, string> = {}): string | undefined {
+  return a.suburb || a.city || a.town || a.village || a.municipality || a.county || undefined
 }
 
 // One raw call to Nominatim. Either structured params (street/city/...) OR a free-text `q`.
@@ -78,6 +86,11 @@ export async function searchCandidates(
         lat: parseFloat(r.lat),
         display: r.display_name,
         precision,
+        components: {
+          city: pickCity(r.address),
+          state: r.address?.state,
+          postcode: r.address?.postcode,
+        },
       }))
     }
   }

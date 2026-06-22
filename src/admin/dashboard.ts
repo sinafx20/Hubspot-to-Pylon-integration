@@ -34,6 +34,12 @@ function explainError(reason: string): { what: string; fix: string } {
       fix: 'Ask your developer to enable the missing permission on the HubSpot private app, then click Retry.',
     }
   }
+  if (r.includes('incomplete address')) {
+    return {
+      what: "The customer’s address in HubSpot is missing something Pylon needs (street, suburb or postcode), so the project couldn’t be created.",
+      fix: 'Open the deal’s contact in HubSpot, fill in the Install Address, suburb and postcode, then click Retry.',
+    }
+  }
   if (r.includes('geocode') || r.includes('site_location') || (r.includes('422') && r.includes('pylon'))) {
     return {
       what: "We couldn’t turn the customer’s address into a map location, so Pylon wouldn’t accept it.",
@@ -217,6 +223,7 @@ export async function dashboardRoute(fastify: FastifyInstance) {
         const isGeocode =
           reason.toLowerCase().includes('geocode') ||
           reason.toLowerCase().includes('site_location') ||
+          reason.toLowerCase().includes('incomplete address') ||
           (reason.toLowerCase().includes('422') && reason.toLowerCase().includes('pylon'))
         const suggestion = isGeocode ? await buildAddressSuggestion(job) : ''
         return `<div class="card">

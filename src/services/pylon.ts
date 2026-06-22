@@ -1,6 +1,14 @@
+import { UnrecoverableError } from 'bullmq'
 import { config } from '../config'
 import type { HubSpotContact, HubSpotCompany, HubSpotDeal } from './hubspot'
-import { geocodeAddress, searchCandidates } from './geocode'
+import { searchCandidates, type GeoCandidate } from './geocode'
+
+// Trim a HubSpot value and treat blank strings as "absent" (HubSpot returns '' or null
+// for empty properties, both of which Pylon rejects when a real value is required).
+const clean = (v?: string | null): string | undefined => {
+  const t = v?.trim()
+  return t ? t : undefined
+}
 
 const BASE = 'https://api.getpylon.com/v1'
 
@@ -36,49 +44,39 @@ export interface PylonProject {
   [key: string]: unknown
 }
 
-function buildProjectPayload(
-  deal: HubSpotDeal,
-  contact: HubSpotContact | null,
-  company: HubSpotCompany | null
-) {
-  const p = deal.properties
-  const c = contact?.properties ?? {}
-  const co = company?.properties ?? {}
-
-  const firstName = c.firstname ?? ''
-  const lastName = c.lastname ?? ''
-  const fullName = [firstName, lastName].filter(Boolean).join(' ') || undefined
-
-  // Company name often holds the full site address (e.g. "12 Main St; Suburb; VIC 3000")
-  // Extract just the street part (before first semicolon) for line1
-  const companyNameStreet = co.name?.includes(';') ? co.name.split(';')[0].trim() : co.name ?? null
-
-  // NOTE: c.address is the contact's personal address, NOT the install site — skip it for line1
-  const address = {
-    line1: c.install_address ?? co.address ?? companyNameStreet ?? '',
-    line2: '',
-    city: c.city ?? co.city ?? '',
-    state: c.state ?? co.state ?? '',
-    zip: c.zip ?? co.zip ?? '',
-    country: c.country ?? co.country ?? 'Australia',
-  }
-
-  return {
-    data: {
-      type: 'solar_projects',
-      attributes: {
-        reference_number: `HS-${deal.id}`,
-        is_committed: false,
-        site_location: null as [number, number] | null,
-        customer_details: {
-          name: fullName,
-          email: c.email,
-          phone: c.phone ?? c.mobilephone,
-        },
-        site_address: address,
-      },
+// Geocode the deal's site address. Structured geocoding (street/suburb/state/postcode as
+// separate fields) is much more robust than a free-text blob and self-recovers from a messy
+// street by falling back to the suburb centroid. We return the full candidate (not just
+// coords) so the caller can backfill a blank suburb/postcode from the normalised result.
+async function geocodeSite(
+  c: HubSpotContact['properties'] | undefined,
+  co: HubSpotCompany['properties'] | undefined
+): Promise<GeoCandidate | null> {
+  const structured = await searchCandidates({
+    parts: {
+      street: clean(c?.install_address) ?? clean(co?.address),
+      city: clean(c?.city) ?? clean(co?.city),
+      state: clean(c?.state) ?? clean(co?.state),
+      postcode: clean(c?.zip) ?? clean(co?.zip),
     },
+  })
+  if (structured.length) {
+    console.log(`[pylon] Geocoded (${structured[0].precision}) "${structured[0].display}"`)
+    return structured[0]
   }
+
+  // Fall back to free-text candidates (e.g. company name often holds the full site address).
+  const freeCandidates = [c?.install_address, co?.name, c?.address, co?.address]
+    .map(clean)
+    .filter(Boolean) as string[]
+  for (const candidate of freeCandidates) {
+    const [found] = await searchCandidates({ free: candidate }, 1)
+    if (found) {
+      console.log(`[pylon] Geocoded (free-text) "${candidate}" → [${found.lon},${found.lat}]`)
+      return found
+    }
+  }
+  return null
 }
 
 export async function createSolarProject(
@@ -86,49 +84,63 @@ export async function createSolarProject(
   contact: HubSpotContact | null,
   company: HubSpotCompany | null
 ): Promise<PylonProject> {
-  const payload = buildProjectPayload(deal, contact, company)
-
-  // Geocode to get coordinates (required by Pylon).
-  // Structured geocoding (street/suburb/state/postcode as separate fields) is much more
-  // robust than a free-text blob and self-recovers from a messy street by falling back
-  // to the suburb centroid — see searchCandidates().
   const c = contact?.properties
   const co = company?.properties
-  const structured = await searchCandidates({
-    parts: {
-      street: c?.install_address ?? co?.address ?? undefined,
-      city: c?.city ?? co?.city ?? undefined,
-      state: c?.state ?? co?.state ?? undefined,
-      postcode: c?.zip ?? co?.zip ?? undefined,
-    },
-  })
-  if (structured.length) {
-    payload.data.attributes.site_location = [structured[0].lon, structured[0].lat]
-    console.log(`[pylon] Geocoded (${structured[0].precision}) "${structured[0].display}"`)
-  } else {
-    // Fall back to free-text candidates (e.g. company name often holds the full site address).
-    const freeCandidates = [
-      c?.install_address,
-      co?.name,
-      c?.address,
-      co?.address,
-    ].filter(Boolean) as string[]
-    for (const candidate of freeCandidates) {
-      const coords = await geocodeAddress(candidate)
-      if (coords) {
-        payload.data.attributes.site_location = coords
-        console.log(`[pylon] Geocoded (free-text) "${candidate}" → [${coords}]`)
-        break
-      }
-    }
+
+  // 1. Geocode first — Pylon requires coordinates AND a non-empty city/zip, and the geocoder's
+  //    normalised result lets us backfill a suburb/postcode that's blank in HubSpot.
+  const geo = await geocodeSite(c, co)
+
+  // 2. Build the site address, preferring HubSpot data and backfilling from the geocode result.
+  // Company name often holds the full site address (e.g. "12 Main St; Suburb; VIC 3000") — take
+  // the street part (before first semicolon) for line1. c.address is the contact's *personal*
+  // address, not the install site, so it's only a last resort.
+  const companyNameStreet = co?.name?.includes(';') ? co.name.split(';')[0].trim() : clean(co?.name)
+  const street = clean(c?.install_address) ?? clean(co?.address) ?? companyNameStreet
+  const city = clean(c?.city) ?? clean(co?.city) ?? clean(geo?.components.city)
+  const state = clean(c?.state) ?? clean(co?.state) ?? clean(geo?.components.state)
+  const zip = clean(c?.zip) ?? clean(co?.zip) ?? clean(geo?.components.postcode)
+  const country = clean(c?.country) ?? clean(co?.country) ?? 'Australia'
+
+  // 3. Customer details — only include fields we actually have. Pylon rejects an explicit
+  //    null (e.g. phone: null), so omit empties entirely rather than sending null.
+  const customer_details: { name?: string; email?: string; phone?: string } = {}
+  const name = [clean(c?.firstname), clean(c?.lastname)].filter(Boolean).join(' ')
+  if (name) customer_details.name = name
+  const email = clean(c?.email)
+  if (email) customer_details.email = email
+  const phone = clean(c?.phone) ?? clean(c?.mobilephone)
+  if (phone) customer_details.phone = phone
+
+  // 4. Validate before POSTing. An incomplete record can NEVER succeed on retry — failing fast
+  //    and non-retryably surfaces it on the dashboard for staff to fix, instead of hammering
+  //    Pylon 5× with a doomed payload (see the dashboard's address-suggestion box).
+  const missing: string[] = []
+  if (!geo) missing.push('a valid street address (we could not find it on the map)')
+  if (!city) missing.push('suburb/city')
+  if (!zip) missing.push('postcode')
+  if (missing.length) {
+    throw new UnrecoverableError(
+      `Incomplete address for deal ${deal.id}: missing ${missing.join(', ')}. ` +
+        `Fix the contact's Install Address, suburb and postcode in HubSpot, then click Retry.`
+    )
   }
 
-  if (!payload.data.attributes.site_location) {
-    console.warn(`[pylon] Could not geocode any address for deal ${deal.id} — Pylon will reject`)
+  const payload = {
+    data: {
+      type: 'solar_projects',
+      attributes: {
+        reference_number: `HS-${deal.id}`,
+        is_committed: false,
+        site_location: [geo!.lon, geo!.lat] as [number, number],
+        customer_details,
+        site_address: { line1: street ?? '', line2: '', city, state: state ?? '', zip, country },
+      },
+    },
   }
 
   // Avoid logging the full payload — it contains customer PII (name, email, address).
-  console.log(`[pylon] Creating solar project for deal ${deal.id} (geocoded=${!!payload.data.attributes.site_location})`)
+  console.log(`[pylon] Creating solar project for deal ${deal.id}`)
   const res = await request<Record<string, unknown>>('POST', '/solar_projects', payload)
   return { id: res.data.id, ...res.data.attributes }
 }
