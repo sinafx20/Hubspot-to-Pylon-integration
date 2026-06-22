@@ -1,6 +1,66 @@
 const NOMINATIM = 'https://nominatim.openstreetmap.org/search'
 const UA = 'hubspot-pylon-integration/1.0'
 
+// ---- single-line address parsing (HubSpot install_address is one free-text line) ----
+
+// Some HubSpot records contain Arabic-Indic / Persian digits — normalise them to ASCII so the
+// postcode/number parsing and Nominatim both understand them.
+function asciiDigits(s: string): string {
+  return s
+    .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+    .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0))
+}
+
+// Split a leading unit / sub-dwelling off an address line, in ANY common AU format:
+// "6/123 Main St", "U6/123", "U6 123 Main St", "Unit 6, 123 Main St", "Flat 6 123",
+// "Apt 6/123", "Suite 6 123". Returns the unit token (e.g. "6" or "12B") and the remaining
+// street part used for geocoding. The unit is kept so we can store it on the Pylon address —
+// but it's removed before geocoding because Nominatim fails on "6/123 …" but matches "123 …".
+export function parseUnit(raw: string): { unit?: string; street: string } {
+  const s = asciiDigits(raw).trim()
+  // keyword form: Unit/U/Flat/Apt/Apartment/Suite <n> [,/ -] <street>
+  const kw = s.match(/^\s*(?:unit|u|flat|fl|apt|apartment|suite|ste)\s*\.?\s*(\d+[a-z]?)\b\s*[,/\-]?\s*(.+)$/i)
+  if (kw && kw[2].trim()) return { unit: kw[1].toUpperCase(), street: kw[2].trim() }
+  // slash form with no keyword: "<unit>/<streetNo> <street>"
+  const slash = s.match(/^\s*(\d+[a-z]?)\s*\/\s*(\d+[a-z]?\s+.+)$/i)
+  if (slash) return { unit: slash[1].toUpperCase(), street: slash[2].trim() }
+  return { street: s }
+}
+
+// Normalise a street line for geocoding: ascii digits, and insert a space where a letter run
+// abuts a digit run (a state/postcode mashed onto the suburb, e.g. "vic3029" → "vic 3029";
+// the 3+-letter guard avoids splitting ordinals like "14th"). Tidies separators/whitespace.
+export function normalizeAddressLine(raw: string): string {
+  return asciiDigits(raw)
+    .replace(/([a-z])(\d)/gi, '$1 $2')
+    .replace(/(\d)([a-z]{3,})/gi, '$1 $2')
+    .replace(/\s*,\s*/g, ', ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+// Find the AU postcode in a free-text address line. Takes the LAST standalone 4-digit run (a
+// postcode sits at the end), tolerating a letter mashed against it ("vic3029"). Ignores a 4-digit
+// run at the very start of the line — that's the house number (e.g. "2774 Fourteenth St"), not a
+// postcode.
+export function extractPostcode(raw?: string | null): string | undefined {
+  if (!raw) return undefined
+  const s = asciiDigits(raw)
+  const re = /(?<!\d)(\d{4})(?!\d)/g
+  let m: RegExpExecArray | null
+  let last: { val: string; idx: number } | undefined
+  while ((m = re.exec(s))) last = { val: m[1], idx: m.index }
+  if (!last || last.idx === 0) return undefined
+  return last.val
+}
+
+// Normalise a structured postcode field (ascii digits, trimmed) to a 4-digit code, or undefined.
+export function cleanPostcode(raw?: string | null): string | undefined {
+  if (!raw) return undefined
+  const m = asciiDigits(raw).match(/\d{4}/)
+  return m ? m[0] : undefined
+}
+
 export interface AddressParts {
   street?: string
   city?: string
@@ -25,9 +85,22 @@ interface NominatimResult {
   address?: Record<string, string>
 }
 
-// Pull a human suburb/city out of Nominatim's address object (the key varies by locality).
+// Pull a human suburb/city out of Nominatim's address object (the key varies by locality —
+// e.g. some AU suburbs come back under city_district or neighbourhood).
 function pickCity(a: Record<string, string> = {}): string | undefined {
-  return a.suburb || a.city || a.town || a.village || a.municipality || a.county || undefined
+  return (
+    a.suburb ||
+    a.city ||
+    a.town ||
+    a.village ||
+    a.municipality ||
+    a.city_district ||
+    a.neighbourhood ||
+    a.hamlet ||
+    a.locality ||
+    a.county ||
+    undefined
+  )
 }
 
 // One raw call to Nominatim. Either structured params (street/city/...) OR a free-text `q`.

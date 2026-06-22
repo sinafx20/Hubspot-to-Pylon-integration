@@ -1,7 +1,14 @@
 import { UnrecoverableError } from 'bullmq'
 import { config } from '../config'
 import type { HubSpotContact, HubSpotCompany, HubSpotDeal } from './hubspot'
-import { searchCandidates, type GeoCandidate } from './geocode'
+import {
+  searchCandidates,
+  parseUnit,
+  normalizeAddressLine,
+  extractPostcode,
+  cleanPostcode,
+  type GeoCandidate,
+} from './geocode'
 
 // Trim a HubSpot value and treat blank strings as "absent" (HubSpot returns '' or null
 // for empty properties, both of which Pylon rejects when a real value is required).
@@ -44,47 +51,49 @@ export interface PylonProject {
   [key: string]: unknown
 }
 
-// Geocode the deal's site address. We return the full candidate (not just coords) so the caller
-// can backfill a blank suburb/postcode from the normalised result.
+// Geocode the deal's site address from the cleaned address parts. Returns the full candidate
+// (not just coords) so the caller can backfill a blank suburb/postcode from the normalised result.
 //
 // Addresses here typically arrive as ONE free-text line in `install_address` (street + suburb,
-// e.g. "11 Dewpond Dr TRUGANINA"), with the structured city/zip fields blank. So we geocode that
-// line FIRST — it yields the exact rooftop match and the correct suburb. A structured query is a
-// poorer first choice for this data: with only a postcode it returns a coarse centroid (and 3029
-// resolves to Tarneit, not Truganina). Structured is kept as the fallback for the messy case
-// where the line won't resolve but clean city/postcode fields exist (e.g. a wrong suburb typed
-// into the line — Matthew Phelan's "Ingham" that's really Kirwan 4817).
-async function geocodeSite(
-  c: HubSpotContact['properties'] | undefined,
-  co: HubSpotCompany['properties'] | undefined
-): Promise<GeoCandidate | null> {
-  // 1. The reliable single-line install address.
-  const line = clean(c?.install_address)
-  if (line) {
-    const [found] = await searchCandidates({ free: line }, 1)
-    if (found) {
-      console.log(`[pylon] Geocoded (free-text) "${line}" → [${found.lon},${found.lat}]`)
-      return found
+// e.g. "11 Dewpond Dr TRUGANINA"), with the structured city/zip fields blank. So we geocode the
+// (unit-stripped, normalised) line FIRST for the exact rooftop. The layered fallbacks guarantee a
+// usable pin: structured matching, then a suburb centroid from any postcode we can find, so a
+// deal still syncs (with a coarse pin) instead of failing outright.
+async function geocodeSite(o: {
+  street?: string
+  city?: string
+  state?: string
+  postcode?: string
+  extraFree?: string[]
+}): Promise<GeoCandidate | null> {
+  const { street, city, state, postcode } = o
+
+  // 1. Precise free-text on the cleaned street line. If the line itself has no postcode, try it
+  //    postcode-qualified first — a bare "25 raymond" can match the wrong state, but
+  //    "25 raymond 3912" pins the right suburb.
+  if (street) {
+    const queries: string[] = []
+    if (!extractPostcode(street) && postcode) queries.push(`${street} ${postcode}`)
+    queries.push(street)
+    for (const q of queries) {
+      const [found] = await searchCandidates({ free: q }, 1)
+      if (found) {
+        console.log(`[pylon] Geocoded (free-text) "${q}" → [${found.lon},${found.lat}]`)
+        return found
+      }
     }
   }
 
-  // 2. Structured fallback — robust when the line is messy/blank but clean city/postcode exist.
-  const structured = await searchCandidates({
-    parts: {
-      street: line ?? clean(co?.address),
-      city: clean(c?.city) ?? clean(co?.city),
-      state: clean(c?.state) ?? clean(co?.state),
-      postcode: clean(c?.zip) ?? clean(co?.zip),
-    },
-  })
+  // 2. Structured matching: rooftop when street+postcode align, else a suburb centroid from the
+  //    postcode — robust when the line is messy/blank but clean city/postcode fields exist.
+  const structured = await searchCandidates({ parts: { street, city, state, postcode } })
   if (structured.length) {
     console.log(`[pylon] Geocoded (${structured[0].precision}) "${structured[0].display}"`)
     return structured[0]
   }
 
   // 3. Last resort: other free-text candidates (company name often holds the full site address).
-  const freeCandidates = [co?.name, c?.address, co?.address].map(clean).filter(Boolean) as string[]
-  for (const candidate of freeCandidates) {
+  for (const candidate of o.extraFree ?? []) {
     const [found] = await searchCandidates({ free: candidate }, 1)
     if (found) {
       console.log(`[pylon] Geocoded (free-text) "${candidate}" → [${found.lon},${found.lat}]`)
@@ -104,19 +113,39 @@ export async function buildSolarProjectPayload(
   const c = contact?.properties
   const co = company?.properties
 
-  // 1. Geocode first — Pylon requires coordinates AND a non-empty city/zip, and the geocoder's
-  //    normalised result lets us backfill a suburb/postcode that's blank in HubSpot.
-  const geo = await geocodeSite(c, co)
+  // 1. Parse the single-line install address: split off any unit (6/, U6, Unit 6, …) and clean
+  //    the street for geocoding. The unit is removed for geocoding (Nominatim fails on "6/123 …")
+  //    but kept for the Pylon address line2.
+  const rawLine = clean(c?.install_address) ?? clean(co?.address)
+  const parsed = rawLine ? parseUnit(rawLine) : { street: undefined as string | undefined, unit: undefined as string | undefined }
+  const cleanStreet = parsed.street ? normalizeAddressLine(parsed.street) : undefined
 
-  // 2. Build the site address, preferring HubSpot data and backfilling from the geocode result.
-  // Company name often holds the full site address (e.g. "12 Main St; Suburb; VIC 3000") — take
-  // the street part (before first semicolon) for line1. c.address is the contact's *personal*
-  // address, not the install site, so it's only a last resort.
+  // Postcode/suburb: the install LINE is the source of truth, then the structured fields. (A
+  // record can have a wrong structured zip but the right one in the line, e.g. line "…vic3029"
+  // vs zip "3024".)
+  const cityIn = clean(c?.city) ?? clean(co?.city)
+  const stateIn = clean(c?.state) ?? clean(co?.state)
+  const postcodeIn = extractPostcode(rawLine) ?? cleanPostcode(c?.zip) ?? cleanPostcode(co?.zip)
+
+  // 2. Geocode — Pylon requires coordinates AND a non-empty city/zip, and the geocoder's
+  //    normalised result lets us backfill a suburb/postcode that's blank in HubSpot.
   const companyNameStreet = co?.name?.includes(';') ? co.name.split(';')[0].trim() : clean(co?.name)
-  const street = clean(c?.install_address) ?? clean(co?.address) ?? companyNameStreet
-  const city = clean(c?.city) ?? clean(co?.city) ?? clean(geo?.components.city)
-  const state = clean(c?.state) ?? clean(co?.state) ?? clean(geo?.components.state)
-  const zip = clean(c?.zip) ?? clean(co?.zip) ?? clean(geo?.components.postcode)
+  const geo = await geocodeSite({
+    street: cleanStreet,
+    city: cityIn,
+    state: stateIn,
+    postcode: postcodeIn,
+    extraFree: [co?.name, c?.address, co?.address].map(clean).filter(Boolean) as string[],
+  })
+
+  // 3. Build the site address, preferring HubSpot/line data and backfilling from the geocode
+  //    result. c.address is the contact's *personal* address, not the install site, so it's only
+  //    a last resort for line1.
+  const street = cleanStreet ?? clean(co?.address) ?? companyNameStreet
+  const unitLine = parsed.unit ? `Unit ${parsed.unit}` : ''
+  const city = cityIn ?? clean(geo?.components.city)
+  const state = stateIn ?? clean(geo?.components.state)
+  const zip = postcodeIn ?? clean(geo?.components.postcode)
   const country = clean(c?.country) ?? clean(co?.country) ?? 'Australia'
 
   // 3. Customer details — only include fields we actually have. Pylon rejects an explicit
@@ -151,7 +180,7 @@ export async function buildSolarProjectPayload(
         is_committed: false,
         site_location: [geo!.lon, geo!.lat] as [number, number],
         customer_details,
-        site_address: { line1: street ?? '', line2: '', city, state: state ?? '', zip, country },
+        site_address: { line1: street ?? '', line2: unitLine, city, state: state ?? '', zip, country },
       },
     },
   }
