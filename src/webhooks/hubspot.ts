@@ -50,10 +50,16 @@ export async function hubspotWebhookRoute(fastify: FastifyInstance) {
     const events = req.body as HubSpotWebhookEvent[]
 
     for (const event of events) {
-      // We only care about deal stage changes
       if (event.subscriptionType !== 'deal.propertyChange') continue
-      if (event.propertyName !== 'dealstage') continue
-      if (event.propertyValue !== config.HUBSPOT_STAGE_READY_TO_QUOTE) continue
+
+      // Two triggers create Pylon projects:
+      //  - deal moved to "Ready to Quote"        → initial sync of every associated account
+      //  - the pylon_sync_requested flag set true → (re)sync accounts added after the deal moved on
+      const isReadyToQuote =
+        event.propertyName === 'dealstage' && event.propertyValue === config.HUBSPOT_STAGE_READY_TO_QUOTE
+      const isSyncRequested =
+        event.propertyName === config.HUBSPOT_SYNC_REQUESTED_PROP && event.propertyValue === 'true'
+      if (!isReadyToQuote && !isSyncRequested) continue
 
       const eventId = `hs-${event.eventId}`
       const dealId = String(event.objectId)
@@ -64,14 +70,14 @@ export async function hubspotWebhookRoute(fastify: FastifyInstance) {
       await logEvent({
         eventId,
         direction: 'hs_to_pylon',
-        eventType: 'deal.ready_to_quote',
+        eventType: isSyncRequested ? 'deal.sync_requested' : 'deal.ready_to_quote',
         hubspotDealId: dealId,
         status: 'queued',
       })
 
       await integrationQueue.add(
         'create-pylon-project',
-        { dealId, eventId },
+        { dealId, eventId, clearSyncFlag: isSyncRequested },
         {
           attempts: 5,
           backoff: { type: 'exponential', delay: 5000 },

@@ -1,4 +1,4 @@
-import { getPrimaryDesign, type PylonDesign, type PylonLineItem } from './pylon'
+import { getPrimaryDesign, getSolarProject, type PylonDesign, type PylonLineItem } from './pylon'
 import {
   getAssociatedContact,
   getAssociatedCompany,
@@ -151,6 +151,51 @@ export async function syncQuoteToDeal(
       companyId: company?.id,
     })
   })
+}
+
+/**
+ * For a SECONDARY (non-anchor) property's project: post a summary note to the deal timeline so
+ * staff see that property's quote, WITHOUT moving the deal stage or overwriting its line items —
+ * the primary account owns the deal's stage and line items.
+ */
+export async function postSecondaryQuoteNote(
+  dealId: string,
+  pylonProjectId: string,
+  opts: { accepted: boolean; isUpdate?: boolean }
+): Promise<void> {
+  const design = await getPrimaryDesign(pylonProjectId)
+  if (!design) {
+    console.warn(`[quote-sync] Secondary project ${pylonProjectId} has no design yet — skipping note`)
+    return
+  }
+  let address = pylonProjectId
+  try {
+    const project = await getSolarProject(pylonProjectId)
+    address = ((project as { site_address?: { line1?: string } }).site_address?.line1 || address).toString()
+  } catch {
+    /* best effort — fall back to the project id in the title */
+  }
+  await createNote(buildSecondaryNoteBody(design, address, opts), { dealId })
+}
+
+function buildSecondaryNoteBody(
+  design: PylonDesign,
+  address: string,
+  opts: { accepted: boolean; isUpdate?: boolean }
+): string {
+  const s = design.summary
+  const verb = opts.accepted ? 'accepted ✅' : opts.isUpdate ? 'updated (revised)' : 'sent'
+  const numberOfPanels = design.module_types.reduce((sum, m) => sum + (m.quantity ?? 0), 0)
+  const lines: string[] = [`<strong>Additional property — quote ${verb}</strong>`, `Property: ${address}`]
+  if (s.dc_output_kw != null) lines.push(`Size: ${s.dc_output_kw} kW`)
+  if (numberOfPanels > 0) lines.push(`Panels: ${numberOfPanels}`)
+  if ((s.storage_kwh ?? 0) > 0) lines.push(`Battery: ${s.storage_kwh} kWh`)
+  if (design.pricing) lines.push(`Total: ${formatMoney(design.pricing.total, design.pricing.currency)} (inc GST)`)
+  const links: string[] = []
+  if (s.web_proposal_url) links.push(`<a href="${s.web_proposal_url}">View proposal</a>`)
+  if (s.pdf_proposal_url) links.push(`<a href="${s.pdf_proposal_url}">Download PDF</a>`)
+  if (links.length) lines.push(links.join(' &nbsp;|&nbsp; '))
+  return lines.join('<br>')
 }
 
 function buildNoteBody(

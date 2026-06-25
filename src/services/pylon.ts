@@ -108,24 +108,24 @@ async function geocodeSite(o: {
 export async function buildSolarProjectPayload(
   deal: HubSpotDeal,
   contact: HubSpotContact | null,
-  company: HubSpotCompany | null
+  account: HubSpotCompany | null
 ) {
   const c = contact?.properties
-  const co = company?.properties
+  const co = account?.properties // the Account (= property/site) — primary address source
 
   // 1. Parse the single-line install address: split off any unit (6/, U6, Unit 6, …) and clean
   //    the street for geocoding. The unit is removed for geocoding (Nominatim fails on "6/123 …")
-  //    but kept for the Pylon address line2.
-  const rawLine = clean(c?.install_address) ?? clean(co?.address)
+  //    but kept for the Pylon address line2. The ACCOUNT's install_address is the site of record;
+  //    fall back to the contact's (transition) and then the account's other address fields.
+  const rawLine = clean(co?.install_address) ?? clean(c?.install_address) ?? clean(co?.address)
   const parsed = rawLine ? parseUnit(rawLine) : { street: undefined as string | undefined, unit: undefined as string | undefined }
   const cleanStreet = parsed.street ? normalizeAddressLine(parsed.street) : undefined
 
-  // Postcode/suburb: the install LINE is the source of truth, then the structured fields. (A
-  // record can have a wrong structured zip but the right one in the line, e.g. line "…vic3029"
-  // vs zip "3024".)
-  const cityIn = clean(c?.city) ?? clean(co?.city)
-  const stateIn = clean(c?.state) ?? clean(co?.state)
-  const postcodeIn = extractPostcode(rawLine) ?? cleanPostcode(c?.zip) ?? cleanPostcode(co?.zip)
+  // Postcode/suburb: the install LINE is the source of truth, then the structured fields (account
+  // first, then contact). A record can have a wrong structured zip but the right one in the line.
+  const cityIn = clean(co?.city) ?? clean(c?.city)
+  const stateIn = clean(co?.state) ?? clean(c?.state)
+  const postcodeIn = extractPostcode(rawLine) ?? cleanPostcode(co?.zip) ?? cleanPostcode(c?.zip)
 
   // 2. Geocode — Pylon requires coordinates AND a non-empty city/zip, and the geocoder's
   //    normalised result lets us backfill a suburb/postcode that's blank in HubSpot.
@@ -176,7 +176,7 @@ export async function buildSolarProjectPayload(
     data: {
       type: 'solar_projects',
       attributes: {
-        reference_number: `HS-${deal.id}`,
+        reference_number: account ? `HS-${deal.id}-${account.id}` : `HS-${deal.id}`,
         is_committed: false,
         site_location: [geo!.lon, geo!.lat] as [number, number],
         customer_details,
@@ -189,9 +189,9 @@ export async function buildSolarProjectPayload(
 export async function createSolarProject(
   deal: HubSpotDeal,
   contact: HubSpotContact | null,
-  company: HubSpotCompany | null
+  account: HubSpotCompany | null
 ): Promise<PylonProject> {
-  const payload = await buildSolarProjectPayload(deal, contact, company)
+  const payload = await buildSolarProjectPayload(deal, contact, account)
 
   // Avoid logging the full payload — it contains customer PII (name, email, address).
   console.log(`[pylon] Creating solar project for deal ${deal.id}`)

@@ -1,5 +1,5 @@
 import { updateDealStage } from '../services/hubspot'
-import { syncQuoteToDeal } from '../services/quote-sync'
+import { syncQuoteToDeal, postSecondaryQuoteNote } from '../services/quote-sync'
 import { getLinkByProjectId } from '../db/links'
 import { logEvent, hasPriorQuoteSync } from '../db/events'
 import { config } from '../config'
@@ -20,6 +20,23 @@ export async function handleUpdateDealQuoteSent({ pylonProjectId, eventId }: Job
     // will never succeed, so skip cleanly instead of throwing and piling up dead jobs.
     console.warn(`[update-deal-quote-sent] No HubSpot deal linked to Pylon project ${pylonProjectId} — ignoring`)
     await logEvent({ eventId, direction: 'pylon_to_hs', eventType: 'proposals.shared', pylonProjectId, status: 'skipped' })
+    return
+  }
+
+  // Secondary (non-anchor) property: leave a summary note on the deal but DON'T move the stage or
+  // overwrite the deal's line items — the primary account's project owns those.
+  if (!link.is_primary) {
+    const isUpdate = await hasPriorQuoteSync(pylonProjectId, eventId)
+    await postSecondaryQuoteNote(link.hubspot_deal_id, pylonProjectId, { accepted: false, isUpdate })
+    await logEvent({
+      eventId,
+      direction: 'pylon_to_hs',
+      eventType: 'proposals.shared',
+      hubspotDealId: link.hubspot_deal_id,
+      pylonProjectId,
+      status: 'success',
+    })
+    console.log(`[update-deal-quote-sent] Secondary project ${pylonProjectId} → note added to deal ${link.hubspot_deal_id} (stage unchanged)`)
     return
   }
 

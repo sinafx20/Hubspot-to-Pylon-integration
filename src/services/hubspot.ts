@@ -70,6 +70,7 @@ export interface HubSpotCompany {
   id: string
   properties: {
     name?: string
+    install_address?: string // the property's site address — primary address source per account
     address?: string
     city?: string
     state?: string
@@ -78,6 +79,11 @@ export interface HubSpotCompany {
     phone?: string
     [key: string]: string | undefined
   }
+}
+
+export interface AssociatedAccount {
+  company: HubSpotCompany
+  primary: boolean // HubSpot's "Primary" company association (typeId 5)
 }
 
 export interface HubSpotDeal {
@@ -108,7 +114,7 @@ export async function getAssociatedContact(dealId: string): Promise<HubSpotConta
   return request<HubSpotContact>('GET', `/crm/v3/objects/contacts/${contactId}?properties=${CONTACT_PROPS}`)
 }
 
-const COMPANY_PROPS = ['name', 'address', 'city', 'state', 'zip', 'country', 'phone'].join(',')
+const COMPANY_PROPS = ['name', 'install_address', 'address', 'city', 'state', 'zip', 'country', 'phone'].join(',')
 
 export async function getAssociatedCompany(dealId: string): Promise<HubSpotCompany | null> {
   const assoc = await request<{ results: { id: string }[] }>(
@@ -119,6 +125,27 @@ export async function getAssociatedCompany(dealId: string): Promise<HubSpotCompa
 
   const companyId = assoc.results[0].id
   return request<HubSpotCompany>('GET', `/crm/v3/objects/companies/${companyId}?properties=${COMPANY_PROPS}`)
+}
+
+/**
+ * All companies (= "Accounts") associated with a deal, each with its full properties and whether
+ * it's HubSpot's PRIMARY account (v4 association typeId 5). One Account ≈ one property/site.
+ */
+export async function getAssociatedAccounts(dealId: string): Promise<AssociatedAccount[]> {
+  const assoc = await request<{
+    results: { toObjectId: number; associationTypes: { category: string; typeId: number }[] }[]
+  }>('GET', `/crm/v4/objects/deals/${dealId}/associations/companies`)
+
+  return Promise.all(
+    assoc.results.map(async (r) => {
+      const primary = r.associationTypes.some((t) => t.category === 'HUBSPOT_DEFINED' && t.typeId === 5)
+      const company = await request<HubSpotCompany>(
+        'GET',
+        `/crm/v3/objects/companies/${r.toObjectId}?properties=${COMPANY_PROPS}`
+      )
+      return { company, primary }
+    })
+  )
 }
 
 export async function updateDealStage(dealId: string, stageId: string): Promise<void> {

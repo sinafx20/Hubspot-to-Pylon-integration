@@ -1,14 +1,14 @@
 /**
- * Re-run the HubSpot→Pylon "create solar project" flow for specific deals that previously
- * failed to sync (e.g. older records that hit the empty-city/zip 422 bug).
+ * Re-run the HubSpot→Pylon "create solar project" flow for specific deals. Now per-account: each
+ * associated Account (property) with an install_address becomes its own Pylon project (the
+ * HubSpot-primary account anchors the deal). Falls back to a contact-based project if no account
+ * has an address.
  *
- * Dry run (default) — geocode + build + validate the Pylon payload and print it, NO writes:
+ * Dry run (default) — geocode + build + validate each account's payload, NO writes:
  *   npm run retrigger -- <dealId> [<dealId> ...]
- * Commit — actually create the Pylon project(s), save the link, log the event (idempotent —
- * skips a deal that's already linked to a Pylon project):
+ * Commit — run the real (idempotent) sync job: create any missing projects + save links:
  *   npm run retrigger -- --commit <dealId> [<dealId> ...]
  */
-
 import fs from 'fs'
 import path from 'path'
 
@@ -33,35 +33,36 @@ async function main() {
     process.exit(1)
   }
 
-  const { getDeal, getAssociatedContact, getAssociatedCompany } = await import('../src/services/hubspot')
-  const { buildSolarProjectPayload, createSolarProject } = await import('../src/services/pylon')
+  const { getDeal, getAssociatedContact, getAssociatedAccounts } = await import('../src/services/hubspot')
+  const { buildSolarProjectPayload } = await import('../src/services/pylon')
 
   for (const dealId of dealIds) {
     console.log(`\n===== Deal ${dealId} =====`)
     try {
-      const [deal, contact, company] = await Promise.all([
-        getDeal(dealId),
-        getAssociatedContact(dealId),
-        getAssociatedCompany(dealId),
-      ])
-
       if (commit) {
-        const { saveLink, getLinkByDealId } = await import('../src/db/links')
-        const existing = await getLinkByDealId(dealId)
-        if (existing) {
-          console.log(`  Already linked to Pylon project ${existing.pylon_project_id} — skipping`)
-          continue
-        }
-        const project = await createSolarProject(deal, contact, company)
-        await saveLink(dealId, project.id)
-        console.log(`  ✅ Created Pylon project ${project.id} and saved link`)
+        const { handleCreatePylonProject } = await import('../src/jobs/create-pylon-project')
+        await handleCreatePylonProject({ dealId, eventId: `manual-${dealId}-${Date.now()}` })
+        console.log('  ✅ sync run complete (see [create-pylon-project] log lines above)')
       } else {
-        const payload = await buildSolarProjectPayload(deal, contact, company)
-        const a = payload.data.attributes
-        console.log('  DRY RUN — would POST this to Pylon:')
-        console.log('    site_location:', a.site_location)
-        console.log('    site_address: ', JSON.stringify(a.site_address))
-        console.log('    customer:     ', JSON.stringify(a.customer_details))
+        const [deal, contact, accounts] = await Promise.all([
+          getDeal(dealId),
+          getAssociatedContact(dealId),
+          getAssociatedAccounts(dealId),
+        ])
+        const withAddr = accounts.filter((a) => (a.company.properties.install_address ?? '').trim())
+        const targets = withAddr.length
+          ? withAddr.map((a) => ({ account: a.company, primary: a.primary }))
+          : [{ account: null as null, primary: true }]
+        console.log(`  ${accounts.length} account(s), ${withAddr.length} with an install address`)
+        for (const t of targets) {
+          try {
+            const a = (await buildSolarProjectPayload(deal, contact, t.account)).data.attributes as any
+            console.log(`  ${t.primary ? '[PRIMARY]  ' : '[secondary]'} account ${t.account?.id ?? 'contact'}:`)
+            console.log(`     line1="${a.site_address.line1}" line2="${a.site_address.line2}" ${a.site_address.city} ${a.site_address.zip}  pin=${JSON.stringify(a.site_location)}`)
+          } catch (e) {
+            console.log(`  ${t.primary ? '[PRIMARY]  ' : '[secondary]'} account ${t.account?.id ?? 'contact'}: ❌ ${(e as Error).message}`)
+          }
+        }
       }
     } catch (err) {
       console.error(`  ❌ ${(err as Error).message}`)

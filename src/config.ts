@@ -14,6 +14,8 @@ const env = z.object({
   HUBSPOT_STAGE_READY_TO_QUOTE: z.string().min(1),
   HUBSPOT_STAGE_QUOTE_SENT: z.string().min(1),
   HUBSPOT_STAGE_CLOSED_WON: z.string().min(1),
+  // Deal checkbox a workflow sets to re-create Pylon projects for newly-added accounts.
+  HUBSPOT_SYNC_REQUESTED_PROP: z.string().default('pylon_sync_requested'),
 
   // Pylon
   PYLON_API_TOKEN: z.string().min(1),
