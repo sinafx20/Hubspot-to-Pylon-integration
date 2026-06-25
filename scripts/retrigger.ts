@@ -56,7 +56,7 @@ async function main() {
         console.log(`  ${accounts.length} account(s), ${withAddr.length} with an install address`)
         for (const t of targets) {
           try {
-            const a = (await buildSolarProjectPayload(deal, contact, t.account)).data.attributes as any
+            const a = (await buildSolarProjectPayload(deal, contact, t.account, { borrowContactPostcode: t.primary || targets.length === 1 })).data.attributes as any
             console.log(`  ${t.primary ? '[PRIMARY]  ' : '[secondary]'} account ${t.account?.id ?? 'contact'}:`)
             console.log(`     line1="${a.site_address.line1}" line2="${a.site_address.line2}" ${a.site_address.city} ${a.site_address.zip}  pin=${JSON.stringify(a.site_location)}`)
           } catch (e) {

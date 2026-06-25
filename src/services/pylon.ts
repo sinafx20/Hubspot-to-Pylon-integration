@@ -108,35 +108,42 @@ async function geocodeSite(o: {
 export async function buildSolarProjectPayload(
   deal: HubSpotDeal,
   contact: HubSpotContact | null,
-  account: HubSpotCompany | null
+  account: HubSpotCompany | null,
+  opts: { borrowContactPostcode?: boolean } = {}
 ) {
   const c = contact?.properties
   const co = account?.properties // the Account (= property/site) — primary address source
 
-  // 1. Parse the single-line install address: split off any unit (6/, U6, Unit 6, …) and clean
-  //    the street for geocoding. The unit is removed for geocoding (Nominatim fails on "6/123 …")
-  //    but kept for the Pylon address line2. The ACCOUNT's install_address is the site of record;
-  //    fall back to the contact's (transition) and then the account's other address fields.
-  const rawLine = clean(co?.install_address) ?? clean(c?.install_address) ?? clean(co?.address)
+  // 1. Pick the address SOURCE and read the LINE + structured city/state from the same object.
+  //    The account is a distinct property/site, so we must NEVER take the account's install line
+  //    and the contact's CITY together — a contact city name strongly biases the geocoder to the
+  //    wrong town (account "131 Beatts Rd, Allingham 4850" + contact city "Kirwan" → wrongly Kirwan).
+  const acctLine = clean(co?.install_address)
+  const contactLine = clean(c?.install_address)
+  const fromAccount = !!acctLine || !contactLine // account is the source unless only the contact has a line
+  const src = fromAccount ? co : c
+
+  // Parse the single-line install address: split off any unit (6/, U6, Unit 6, …) and clean the
+  // street for geocoding. The unit is removed for geocoding (Nominatim fails on "6/123 …") but
+  // kept for the Pylon address line2.
+  const rawLine = acctLine ?? contactLine ?? clean(co?.address)
   const parsed = rawLine ? parseUnit(rawLine) : { street: undefined as string | undefined, unit: undefined as string | undefined }
   const cleanStreet = parsed.street ? normalizeAddressLine(parsed.street) : undefined
 
-  // Postcode/suburb: the install LINE is the source of truth, then the structured fields (account
-  // first, then contact). A record can have a wrong structured zip but the right one in the line.
-  const cityIn = clean(co?.city) ?? clean(c?.city)
-  const stateIn = clean(co?.state) ?? clean(c?.state)
-  const postcodeIn = extractPostcode(rawLine) ?? cleanPostcode(co?.zip) ?? cleanPostcode(c?.zip)
+  // Postcode/suburb: the install LINE is the source of truth, then the SOURCE's structured zip.
+  // As a LAST resort, the contact's postcode may backfill a sole/primary account whose line has
+  // no postcode (same property) — postcode only, never the city, and never for a secondary account.
+  const cityIn = clean(src?.city)
+  const stateIn = clean(src?.state)
+  const borrowedPostcode =
+    fromAccount && (opts.borrowContactPostcode ?? true) ? cleanPostcode(c?.zip) : undefined
+  const postcodeIn = extractPostcode(rawLine) ?? cleanPostcode(src?.zip) ?? borrowedPostcode
 
   // 2. Geocode — Pylon requires coordinates AND a non-empty city/zip, and the geocoder's
   //    normalised result lets us backfill a suburb/postcode that's blank in HubSpot.
   const companyNameStreet = co?.name?.includes(';') ? co.name.split(';')[0].trim() : clean(co?.name)
-  const geo = await geocodeSite({
-    street: cleanStreet,
-    city: cityIn,
-    state: stateIn,
-    postcode: postcodeIn,
-    extraFree: [co?.name, c?.address, co?.address].map(clean).filter(Boolean) as string[],
-  })
+  const extraFree = (fromAccount ? [co?.name, co?.address] : [c?.address]).map(clean).filter(Boolean) as string[]
+  const geo = await geocodeSite({ street: cleanStreet, city: cityIn, state: stateIn, postcode: postcodeIn, extraFree })
 
   // 3. Build the site address, preferring HubSpot/line data and backfilling from the geocode
   //    result. c.address is the contact's *personal* address, not the install site, so it's only
@@ -146,7 +153,7 @@ export async function buildSolarProjectPayload(
   const city = cityIn ?? clean(geo?.components.city)
   const state = stateIn ?? clean(geo?.components.state)
   const zip = postcodeIn ?? clean(geo?.components.postcode)
-  const country = clean(c?.country) ?? clean(co?.country) ?? 'Australia'
+  const country = clean(src?.country) ?? 'Australia'
 
   // 3. Customer details — only include fields we actually have. Pylon rejects an explicit
   //    null (e.g. phone: null), so omit empties entirely rather than sending null.
@@ -189,9 +196,10 @@ export async function buildSolarProjectPayload(
 export async function createSolarProject(
   deal: HubSpotDeal,
   contact: HubSpotContact | null,
-  account: HubSpotCompany | null
+  account: HubSpotCompany | null,
+  opts: { borrowContactPostcode?: boolean } = {}
 ): Promise<PylonProject> {
-  const payload = await buildSolarProjectPayload(deal, contact, account)
+  const payload = await buildSolarProjectPayload(deal, contact, account, opts)
 
   // Avoid logging the full payload — it contains customer PII (name, email, address).
   console.log(`[pylon] Creating solar project for deal ${deal.id}`)

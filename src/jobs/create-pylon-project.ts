@@ -47,7 +47,10 @@ export async function handleCreatePylonProject({ dealId, eventId, clearSyncFlag 
       continue
     }
     const isPrimary = accountId === anchorAccountId && !(await hasPrimaryLink(dealId))
-    const project = await createSolarProject(deal, contact, account)
+    // Only the primary/sole property may borrow the contact's postcode (same site); a secondary
+    // property is a different site, so never lean on the contact's postcode for it.
+    const isSoleOrPrimary = isPrimary || targets.length === 1
+    const project = await createSolarProject(deal, contact, account, { borrowContactPostcode: isSoleOrPrimary })
     await saveLink(dealId, accountId, project.id, isPrimary)
     created++
     console.log(

@@ -110,7 +110,28 @@ function pickCity(a: Record<string, string> = {}): string | undefined {
   )
 }
 
+// Nominatim's usage policy is ≤1 request/second. A single address geocode fires several lookups,
+// and a multi-account deal geocodes several addresses back-to-back, so we MUST serialise + space
+// the calls — otherwise we get throttled and a throttle (HTTP 429/5xx) silently looks like "no
+// match", which mis-pins an address. Serialise ALL calls through one chain with a min interval.
+const MIN_INTERVAL_MS = 1100
+let lastCallAt = 0
+let chain: Promise<unknown> = Promise.resolve()
+function rateLimited<T>(fn: () => Promise<T>): Promise<T> {
+  const run = chain.then(async () => {
+    const wait = MIN_INTERVAL_MS - (Date.now() - lastCallAt)
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait))
+    lastCallAt = Date.now()
+    return fn()
+  })
+  chain = run.catch(() => undefined) // keep the chain alive even if a call throws
+  return run
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
 // One raw call to Nominatim. Either structured params (street/city/...) OR a free-text `q`.
+// Rate-limited + retried on throttle/5xx so a transient throttle isn't mistaken for "no results".
 async function query(params: Record<string, string>, limit: number): Promise<NominatimResult[]> {
   const sp = new URLSearchParams({
     format: 'json',
@@ -119,9 +140,18 @@ async function query(params: Record<string, string>, limit: number): Promise<Nom
     countrycodes: 'au',
     ...params,
   })
-  const res = await fetch(`${NOMINATIM}?${sp}`, { headers: { 'User-Agent': UA } })
-  if (!res.ok) return []
-  return (await res.json()) as NominatimResult[]
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await rateLimited(() => fetch(`${NOMINATIM}?${sp}`, { headers: { 'User-Agent': UA } }))
+      if (res.ok) return (await res.json()) as NominatimResult[]
+      // 429/5xx = throttled or transient → retry; other 4xx = genuine, give up.
+      if (res.status !== 429 && res.status < 500) return []
+    } catch {
+      /* network blip — retry */
+    }
+    if (attempt < 3) await sleep(attempt * 1500)
+  }
+  return []
 }
 
 // Structured geocoding is far more robust than a free-text blob, because Nominatim
