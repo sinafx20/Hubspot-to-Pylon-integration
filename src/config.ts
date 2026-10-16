@@ -17,6 +17,14 @@ const env = z.object({
   // Deal checkbox a workflow sets to re-create Pylon projects for newly-added accounts.
   HUBSPOT_SYNC_REQUESTED_PROP: z.string().default('pylon_sync_requested'),
 
+  // When true, webhooks are still accepted and queued but the worker doesn't process them. Used
+  // during pipeline changes so no job moves a deal while stage IDs are being remapped; unpausing
+  // drains the queue, and each job reads the stage IDs from config at run time.
+  PAUSE_WORKER: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+
   // Pylon
   PYLON_API_TOKEN: z.string().min(1),
   PYLON_WEBHOOK_SECRET: z.string().optional(),

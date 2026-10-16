@@ -296,7 +296,13 @@ export async function createNote(
 }
 
 export async function listPipelines() {
-  return request<{ results: { id: string; label: string; stages: { id: string; label: string }[] }[] }>(
+  return request<{
+    results: {
+      id: string
+      label: string
+      stages: { id: string; label: string; metadata?: { isClosed?: string; probability?: string } }[]
+    }[]
+  }>(
     'GET',
     '/crm/v3/pipelines/deals'
   )

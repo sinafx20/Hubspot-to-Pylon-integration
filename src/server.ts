@@ -4,6 +4,41 @@ import { hubspotWebhookRoute } from './webhooks/hubspot'
 import { pylonWebhookRoute } from './webhooks/pylon'
 import { dashboardRoute } from './admin/dashboard'
 import { startWorker } from './queue/worker'
+import { listPipelines } from './services/hubspot'
+
+/**
+ * Refuse to start the worker if the stage env vars don't match what the stages actually mean in
+ * HubSpot (e.g. QUOTE_SENT pointing at a won stage). Jobs stay queued until the config is fixed,
+ * which is far cheaper than deals being moved into the wrong stage and firing its workflows.
+ */
+async function stageConfigIsValid(): Promise<boolean> {
+  try {
+    const { results } = await listPipelines()
+    const pipeline = results.find((p) => p.id === config.HUBSPOT_PIPELINE_ID)
+    if (!pipeline) throw new Error(`pipeline ${config.HUBSPOT_PIPELINE_ID} not found`)
+    const stage = (id: string) => pipeline.stages.find((s) => s.id === id)
+    const isOpen = (id: string) => stage(id)?.metadata?.isClosed === 'false'
+    const isWon = (id: string) =>
+      stage(id)?.metadata?.isClosed === 'true' && Number(stage(id)?.metadata?.probability) === 1
+
+    const problems: string[] = []
+    if (!isOpen(config.HUBSPOT_STAGE_READY_TO_QUOTE)) problems.push('HUBSPOT_STAGE_READY_TO_QUOTE is not an open stage')
+    if (!isOpen(config.HUBSPOT_STAGE_QUOTE_SENT)) problems.push('HUBSPOT_STAGE_QUOTE_SENT is not an open stage')
+    if (!isWon(config.HUBSPOT_STAGE_CLOSED_WON)) problems.push('HUBSPOT_STAGE_CLOSED_WON is not a won (closed, 100%) stage')
+    if (problems.length) {
+      server.log.error(`Worker NOT started, stage config mismatch: ${problems.join('; ')}`)
+      return false
+    }
+    server.log.info(
+      `Stages OK: ready=${stage(config.HUBSPOT_STAGE_READY_TO_QUOTE)!.label}, ` +
+        `quoteSent=${stage(config.HUBSPOT_STAGE_QUOTE_SENT)!.label}, won=${stage(config.HUBSPOT_STAGE_CLOSED_WON)!.label}`
+    )
+    return true
+  } catch (err) {
+    server.log.error(`Worker NOT started, could not verify stage config: ${(err as Error).message}`)
+    return false
+  }
+}
 
 const server = Fastify({ logger: true })
 
@@ -31,7 +66,11 @@ server.register(dashboardRoute)
 const start = async () => {
   try {
     await server.listen({ port: config.PORT, host: '0.0.0.0' })
-    startWorker()
+    if (config.PAUSE_WORKER) {
+      server.log.warn('PAUSE_WORKER=true: webhooks are queued but not processed')
+    } else if (await stageConfigIsValid()) {
+      startWorker()
+    }
     server.log.info(`Integration service running on port ${config.PORT}`)
   } catch (err) {
     server.log.error(err)
