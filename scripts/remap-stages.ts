@@ -20,6 +20,7 @@
  * Run the integration with PAUSE_WORKER=true for the duration.
  *
  * Usage:  npx tsx scripts/remap-stages.ts            (dry run, read-only)
+ *         npx tsx scripts/remap-stages.ts --apply --stop-after 6
  *         npx tsx scripts/remap-stages.ts --apply
  */
 import fs from 'fs'
@@ -36,6 +37,9 @@ const token = process.env.HUBSPOT_ACCESS_TOKEN
 if (!token) throw new Error('HUBSPOT_ACCESS_TOKEN not set in .env')
 
 const APPLY = process.argv.includes('--apply')
+// Stop after step N (e.g. to switch the integration's env vars once Quote Sent and Won both exist).
+const stopIdx = process.argv.indexOf('--stop-after')
+const STOP_AFTER = stopIdx > -1 ? Number(process.argv[stopIdx + 1]) : 0
 const PIPELINE = 'default'
 const OLD_LOST = '3086465512'
 const QUOTE_SENT_LABEL = 'Quote Sent'
@@ -171,6 +175,10 @@ async function step(name: string, isDone: () => Promise<boolean>, run: () => Pro
   const label = `[${String(stepNo).padStart(2)}] ${name}`
   if (await isDone()) {
     console.log(`${label}  (already done)`)
+    return
+  }
+  if (STOP_AFTER && stepNo > STOP_AFTER) {
+    console.log(`${label}  not run (--stop-after ${STOP_AFTER})`)
     return
   }
   if (!APPLY) {
