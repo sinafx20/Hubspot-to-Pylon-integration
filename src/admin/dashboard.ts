@@ -15,6 +15,8 @@ function friendlyJobTitle(name: string): string {
       return "Move the deal to ‘Quote Sent’ and copy the quote details"
     case 'update-deal-closed-won':
       return "Move the deal to ‘Quote Accepted’"
+    case 'check-address':
+      return 'Check the deal’s address'
     default:
       return name
   }
@@ -32,6 +34,12 @@ function explainError(reason: string): { what: string; fix: string } {
     return {
       what: 'The HubSpot connection is missing a permission it needs.',
       fix: 'Ask your developer to enable the missing permission on the HubSpot private app, then click Retry.',
+    }
+  }
+  if (r.includes('address check failed')) {
+    return {
+      what: 'The address on this deal didn’t pass the address check, so no Pylon project was created. The reasons are listed below and in the deal’s “Address check notes”.',
+      fix: 'Open the deal in HubSpot, correct the Pylon address fields (street, unit, suburb, postcode), tick “Re-check address”, then move the deal to Ready to quote again or click Retry.',
     }
   }
   if (r.includes('incomplete address')) {

@@ -34,7 +34,8 @@ async function main() {
   }
 
   const { getDeal, getAssociatedContact, getAssociatedAccounts } = await import('../src/services/hubspot')
-  const { buildSolarProjectPayload } = await import('../src/services/pylon')
+  const { primaryInput, rawInput, runCheck } = await import('../src/services/address-sync')
+  const { formatAddress } = await import('../src/services/address')
 
   for (const dealId of dealIds) {
     console.log(`\n===== Deal ${dealId} =====`)
@@ -56,9 +57,9 @@ async function main() {
         console.log(`  ${accounts.length} account(s), ${withAddr.length} with an install address`)
         for (const t of targets) {
           try {
-            const a = (await buildSolarProjectPayload(deal, contact, t.account, { borrowContactPostcode: t.primary || targets.length === 1 })).data.attributes as any
-            console.log(`  ${t.primary ? '[PRIMARY]  ' : '[secondary]'} account ${t.account?.id ?? 'contact'}:`)
-            console.log(`     line1="${a.site_address.line1}" line2="${a.site_address.line2}" ${a.site_address.city} ${a.site_address.zip}  pin=${JSON.stringify(a.site_location)}`)
+            const c = await runCheck(t.primary ? primaryInput(deal, t.account, contact) : rawInput(t.account, contact, targets.length === 1))
+            console.log(`  ${t.primary ? '[PRIMARY]  ' : '[secondary]'} account ${t.account?.id ?? 'contact'}: ${c.grade} → ${formatAddress(c.fields)}  ${c.mapUrl ?? ''}`)
+            c.notes.forEach((n) => console.log(`     ${n}`))
           } catch (e) {
             console.log(`  ${t.primary ? '[PRIMARY]  ' : '[secondary]'} account ${t.account?.id ?? 'contact'}: ❌ ${(e as Error).message}`)
           }

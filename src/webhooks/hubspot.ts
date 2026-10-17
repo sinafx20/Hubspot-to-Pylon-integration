@@ -49,7 +49,39 @@ export async function hubspotWebhookRoute(fastify: FastifyInstance) {
 
     const events = req.body as HubSpotWebhookEvent[]
 
+    const checkStages = config.HUBSPOT_ADDRESS_CHECK_STAGES.split(',').map((s) => s.trim())
+
     for (const event of events) {
+      // Address check triggers (services/address.ts):
+      //  - deal created, or entered an early stage → pre-fill the Pylon address fields. Delayed,
+      //    because the form workflow copies the address onto the account a minute or so later.
+      //  - staff ticked "Re-check address"           → re-check now, and fix a wrong Pylon project
+      const isNewDeal = event.subscriptionType === 'deal.creation'
+      const isEarlyStage =
+        event.subscriptionType === 'deal.propertyChange' && event.propertyName === 'dealstage' && checkStages.includes(event.propertyValue ?? '')
+      const isRecheck =
+        event.subscriptionType === 'deal.propertyChange' &&
+        event.propertyName === config.HUBSPOT_ADDRESS_RECHECK_PROP &&
+        event.propertyValue === 'true'
+      if (isNewDeal || isEarlyStage || isRecheck) {
+        const eventId = `hs-${event.eventId}`
+        if (await isEventProcessed(eventId)) continue
+        const trigger = isRecheck ? 'recheck' : 'stage'
+        await logEvent({ eventId, direction: 'hs_to_pylon', eventType: `address.${trigger}`, hubspotDealId: String(event.objectId), status: 'queued' })
+        await integrationQueue.add(
+          'check-address',
+          { dealId: String(event.objectId), eventId, trigger },
+          {
+            delay: trigger === 'stage' ? config.ADDRESS_CHECK_DELAY_MS : 0,
+            attempts: 5,
+            backoff: { type: 'exponential', delay: 5000 },
+            removeOnComplete: { count: 100 },
+            removeOnFail: false,
+          }
+        )
+        continue
+      }
+
       if (event.subscriptionType !== 'deal.propertyChange') continue
 
       // Two triggers create Pylon projects:

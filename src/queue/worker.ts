@@ -3,6 +3,7 @@ import { config } from '../config'
 import { handleCreatePylonProject } from '../jobs/create-pylon-project'
 import { handleUpdateDealQuoteSent } from '../jobs/update-deal-quote-sent'
 import { handleUpdateDealClosedWon } from '../jobs/update-deal-closed-won'
+import { handleCheckAddress } from '../jobs/check-address'
 
 const connection = { url: config.REDIS_URL }
 
@@ -17,6 +18,8 @@ export function startWorker() {
           return handleUpdateDealQuoteSent(job.data)
         case 'update-deal-closed-won':
           return handleUpdateDealClosedWon(job.data)
+        case 'check-address':
+          return handleCheckAddress(job.data)
         default:
           throw new Error(`Unknown job type: ${job.name}`)
       }

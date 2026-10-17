@@ -1,8 +1,11 @@
 import { getDeal, getAssociatedContact, getAssociatedAccounts, updateDealProperties, type HubSpotCompany } from '../services/hubspot'
 import { createSolarProject } from '../services/pylon'
+import { primaryInput, rawInput, runCheck, writeCheckToDeal } from '../services/address-sync'
+import { formatAddress, type AddressCheck } from '../services/address'
 import { saveLink, getLinkByDealAccount, hasPrimaryLink } from '../db/links'
 import { logEvent } from '../db/events'
 import { config } from '../config'
+import { UnrecoverableError } from 'bullmq'
 
 interface JobData {
   dealId: string
@@ -15,6 +18,11 @@ interface JobData {
  * yet. The HubSpot-primary account's project is the anchor (drives the deal stage on the reverse
  * flow); secondary projects only leave notes. If no account has an install address, fall back to
  * a single contact-based project. Idempotent per (deal, account) — safe to re-run.
+ *
+ * Every site's address is checked first (services/address.ts). The primary site uses the deal's
+ * Pylon address fields once filled (confirmed in the Ready to quote pop-up), and its check is
+ * written back to the deal. If ANY site fails its check, nothing is created, so a deal never ends
+ * up half-synced with a wrong address.
  */
 export async function handleCreatePylonProject({ dealId, eventId, clearSyncFlag }: JobData) {
   const [deal, contact, accounts] = await Promise.all([
@@ -38,7 +46,8 @@ export async function handleCreatePylonProject({ dealId, eventId, clearSyncFlag 
   // fallback. Only used the first time the deal gains an anchor; existing anchors are never demoted.
   const anchorAccountId = withAddress.find((a) => a.primary)?.company.id ?? withAddress[0]?.company.id ?? null
 
-  let created = 0
+  // 1. Check every not-yet-synced site before creating anything.
+  const pending: { account: HubSpotCompany | null; isPrimary: boolean; check: AddressCheck }[] = []
   let skipped = 0
   for (const account of targets) {
     const accountId = account?.id ?? null
@@ -46,15 +55,35 @@ export async function handleCreatePylonProject({ dealId, eventId, clearSyncFlag 
       skipped++
       continue
     }
-    const isPrimary = accountId === anchorAccountId && !(await hasPrimaryLink(dealId))
-    // Only the primary/sole property may borrow the contact's postcode (same site); a secondary
-    // property is a different site, so never lean on the contact's postcode for it.
-    const isSoleOrPrimary = isPrimary || targets.length === 1
-    const project = await createSolarProject(deal, contact, account, { borrowContactPostcode: isSoleOrPrimary })
+    const isAnchor = accountId === anchorAccountId
+    const isPrimary = isAnchor && !(await hasPrimaryLink(dealId))
+    const check = await runCheck(isAnchor ? primaryInput(deal, account, contact) : rawInput(account, contact, targets.length === 1))
+    if (isAnchor) await writeCheckToDeal(dealId, check)
+    pending.push({ account, isPrimary, check })
+  }
+
+  const failed = pending.filter((p) => p.check.grade === 'failed')
+  if (failed.length) {
+    const detail = failed
+      .map((p) => `${p.account ? `account ${p.account.id}` : 'contact'}: ${p.check.notes.filter((n) => n.startsWith('❌')).join(' ')}`)
+      .join(' | ')
+    await logEvent({ eventId, direction: 'hs_to_pylon', eventType: 'deal.ready_to_quote', hubspotDealId: dealId, status: 'failed', errorMessage: detail })
+    throw new UnrecoverableError(
+      `Address check failed for deal ${dealId}, no Pylon project created. ${detail} ` +
+        `Fix the Pylon address fields on the deal, then tick "Re-check address" or click Retry.`
+    )
+  }
+
+  // 2. Create the projects from the checked, standardised addresses.
+  let created = 0
+  for (const { account, isPrimary, check } of pending) {
+    const accountId = account?.id ?? null
+    const project = await createSolarProject(deal, contact, account, check)
     await saveLink(dealId, accountId, project.id, isPrimary)
     created++
     console.log(
-      `[create-pylon-project] Deal ${dealId} account ${accountId ?? 'contact'} → Pylon ${project.id}${isPrimary ? ' (primary/anchor)' : ''}`
+      `[create-pylon-project] Deal ${dealId} account ${accountId ?? 'contact'} → Pylon ${project.id} ` +
+        `(${check.grade}: ${formatAddress(check.fields)})${isPrimary ? ' (primary/anchor)' : ''}`
     )
   }
 

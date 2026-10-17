@@ -43,8 +43,13 @@ const DEAL_PROPS = [
   'closedate',
   'dealstage',
   'pipeline',
-  // Add any custom solar deal properties your client uses, e.g.:
-  // 'system_size_kw', 'number_of_storeys', 'site_address'
+  // Standardised site address, pre-filled by the address check and confirmed by staff
+  // (see services/address-sync.ts). Once filled, these are what Pylon receives.
+  'pylon_address_line1',
+  'pylon_address_unit',
+  'pylon_address_suburb',
+  'pylon_address_state',
+  'pylon_address_postcode',
 ].join(',')
 
 export interface HubSpotContact {

@@ -57,7 +57,8 @@ export function extractPostcode(raw?: string | null): string | undefined {
 // Normalise a structured postcode field (ascii digits, trimmed) to a 4-digit code, or undefined.
 export function cleanPostcode(raw?: string | null): string | undefined {
   if (!raw) return undefined
-  const m = asciiDigits(raw).match(/\d{4}/)
+  // A standalone 4-digit run only: never the first 4 digits of a longer number ("02141" → none).
+  const m = asciiDigits(raw).match(/(?<!\d)\d{4}(?!\d)/)
   return m ? m[0] : undefined
 }
 
@@ -85,7 +86,7 @@ function precisionOf(a: Record<string, string> = {}): GeoCandidate['precision'] 
   return a.house_number ? 'rooftop' : a.road ? 'street' : 'suburb'
 }
 
-interface NominatimResult {
+export interface NominatimResult {
   lon: string
   lat: string
   display_name: string
@@ -132,7 +133,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 // One raw call to Nominatim. Either structured params (street/city/...) OR a free-text `q`.
 // Rate-limited + retried on throttle/5xx so a transient throttle isn't mistaken for "no results".
-async function query(params: Record<string, string>, limit: number): Promise<NominatimResult[]> {
+export async function query(params: Record<string, string>, limit: number): Promise<NominatimResult[]> {
   const sp = new URLSearchParams({
     format: 'json',
     addressdetails: '1',

@@ -25,6 +25,17 @@ const env = z.object({
     .optional()
     .transform((v) => v === 'true'),
 
+  // Address check: run automatically (after a short delay, so the form workflow has copied the
+  // address onto the account) when a deal enters one of these stages.
+  HUBSPOT_ADDRESS_CHECK_STAGES: z.string().default('3224932835,appointmentscheduled'),
+  ADDRESS_CHECK_DELAY_MS: z.coerce.number().default(180_000),
+  // Deal checkbox staff tick to re-check the address (and replace a wrong Pylon project).
+  HUBSPOT_ADDRESS_RECHECK_PROP: z.string().default('pylon_address_recheck'),
+  // Matches outside these states fail the check (e.g. "Jones St" resolving to NSW).
+  ADDRESS_ALLOWED_STATES: z.string().default('VIC'),
+  // Optional: Google Geocoding is used first when set; OpenStreetMap is the fallback.
+  GOOGLE_MAPS_API_KEY: z.string().optional(),
+
   // Pylon
   PYLON_API_TOKEN: z.string().min(1),
   PYLON_WEBHOOK_SECRET: z.string().optional(),
