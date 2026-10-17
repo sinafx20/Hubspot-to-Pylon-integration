@@ -34,7 +34,7 @@ async function main() {
   }
 
   const { getDeal, getAssociatedContact, getAssociatedAccounts } = await import('../src/services/hubspot')
-  const { primaryInput, rawInput, runCheck } = await import('../src/services/address-sync')
+  const { accountInput, contactForAccount, rawInput, runCheck } = await import('../src/services/address-sync')
   const { formatAddress } = await import('../src/services/address')
 
   for (const dealId of dealIds) {
@@ -57,7 +57,7 @@ async function main() {
         console.log(`  ${accounts.length} account(s), ${withAddr.length} with an install address`)
         for (const t of targets) {
           try {
-            const c = await runCheck(t.primary ? primaryInput(deal, t.account, contact) : rawInput(t.account, contact, targets.length === 1))
+            const c = await runCheck(t.account ? accountInput(t.account, contactForAccount(t.account, [contact])) : rawInput(null, contact))
             console.log(`  ${t.primary ? '[PRIMARY]  ' : '[secondary]'} account ${t.account?.id ?? 'contact'}: ${c.grade} → ${formatAddress(c.fields)}  ${c.mapUrl ?? ''}`)
             c.notes.forEach((n) => console.log(`     ${n}`))
           } catch (e) {

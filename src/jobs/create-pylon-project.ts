@@ -1,6 +1,6 @@
 import { getDeal, getAssociatedContact, getAssociatedAccounts, updateDealProperties, type HubSpotCompany } from '../services/hubspot'
 import { createSolarProject } from '../services/pylon'
-import { primaryInput, rawInput, runCheck, writeCheckToDeal } from '../services/address-sync'
+import { accountInput, contactForAccount, rawInput, refreshDealSummary, runCheck, writeCheckToAccount } from '../services/address-sync'
 import { formatAddress, type AddressCheck } from '../services/address'
 import { saveLink, getLinkByDealAccount, hasPrimaryLink } from '../db/links'
 import { logEvent } from '../db/events'
@@ -19,10 +19,10 @@ interface JobData {
  * flow); secondary projects only leave notes. If no account has an install address, fall back to
  * a single contact-based project. Idempotent per (deal, account) — safe to re-run.
  *
- * Every site's address is checked first (services/address.ts). The primary site uses the deal's
- * Pylon address fields once filled (confirmed in the Ready to quote pop-up), and its check is
- * written back to the deal. If ANY site fails its check, nothing is created, so a deal never ends
- * up half-synced with a wrong address.
+ * Every property's address is checked first (services/address.ts), from the account's Pylon address
+ * fields once filled (staff may have corrected them), else its raw install line. Each check is
+ * written back to its account and the deal's summary is refreshed. If ANY property fails its
+ * check, nothing is created, so a deal never ends up half-synced with a wrong address.
  */
 export async function handleCreatePylonProject({ dealId, eventId, clearSyncFlag }: JobData) {
   const [deal, contact, accounts] = await Promise.all([
@@ -55,12 +55,12 @@ export async function handleCreatePylonProject({ dealId, eventId, clearSyncFlag 
       skipped++
       continue
     }
-    const isAnchor = accountId === anchorAccountId
-    const isPrimary = isAnchor && !(await hasPrimaryLink(dealId))
-    const check = await runCheck(isAnchor ? primaryInput(deal, account, contact) : rawInput(account, contact, targets.length === 1))
-    if (isAnchor) await writeCheckToDeal(dealId, check)
+    const isPrimary = accountId === anchorAccountId && !(await hasPrimaryLink(dealId))
+    const check = await runCheck(account ? accountInput(account, contactForAccount(account, [contact])) : rawInput(null, contact))
+    if (account) await writeCheckToAccount(account, check)
     pending.push({ account, isPrimary, check })
   }
+  await refreshDealSummary(dealId)
 
   const failed = pending.filter((p) => p.check.grade === 'failed')
   if (failed.length) {
@@ -70,7 +70,7 @@ export async function handleCreatePylonProject({ dealId, eventId, clearSyncFlag 
     await logEvent({ eventId, direction: 'hs_to_pylon', eventType: 'deal.ready_to_quote', hubspotDealId: dealId, status: 'failed', errorMessage: detail })
     throw new UnrecoverableError(
       `Address check failed for deal ${dealId}, no Pylon project created. ${detail} ` +
-        `Fix the Pylon address fields on the deal, then tick "Re-check address" or click Retry.`
+        `Fix the Pylon address fields on the flagged account, then tick "Re-check address" or click Retry.`
     )
   }
 

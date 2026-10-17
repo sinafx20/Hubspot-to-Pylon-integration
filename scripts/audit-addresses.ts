@@ -44,8 +44,8 @@ async function searchEarlyDeals(): Promise<{ id: string; name: string }[]> {
 }
 
 async function main() {
-  const { getDeal, getAssociatedContact, getAssociatedAccounts } = await import('../src/services/hubspot')
-  const { primaryInput, runCheck } = await import('../src/services/address-sync')
+  const { getAssociatedContact, getAssociatedAccounts } = await import('../src/services/hubspot')
+  const { accountInput, contactForAccount, isSite, rawInput, runCheck } = await import('../src/services/address-sync')
   const { formatAddress } = await import('../src/services/address')
 
   const deals = await searchEarlyDeals()
@@ -55,13 +55,16 @@ async function main() {
   const icon = { verified: '✅', check: '⚠️ ', failed: '❌' }
   for (const d of deals) {
     try {
-      const [deal, contact, accounts] = await Promise.all([getDeal(d.id), getAssociatedContact(d.id), getAssociatedAccounts(d.id)])
-      const withAddr = accounts.filter((a) => (a.company.properties.install_address ?? '').trim())
-      const primary = withAddr.find((a) => a.primary)?.company ?? withAddr[0]?.company ?? null
-      const c = await runCheck(primaryInput(deal, primary, contact))
-      counts[c.grade]++
-      console.log(`${icon[c.grade]} ${(d.name || d.id).slice(0, 24).padEnd(24)} | ${formatAddress(c.fields)}`)
-      c.notes.filter((n) => !n.startsWith('Matched with')).forEach((n) => console.log(`     ${n}`))
+      const [contact, accounts] = await Promise.all([getAssociatedContact(d.id), getAssociatedAccounts(d.id)])
+      const sites = accounts.filter((a) => isSite(a.company)).map((a) => a.company)
+      const targets = sites.length ? sites : [null]
+      for (const account of targets) {
+        const c = await runCheck(account ? accountInput(account, contactForAccount(account, [contact])) : rawInput(null, contact))
+        counts[c.grade]++
+        const who = `${(d.name || d.id).slice(0, 20)}${targets.length > 1 ? ` #${account?.id}` : ''}`
+        console.log(`${icon[c.grade]} ${who.slice(0, 24).padEnd(24)} | ${formatAddress(c.fields)}`)
+        c.notes.filter((n) => !n.startsWith('Matched with')).forEach((n) => console.log(`     ${n}`))
+      }
     } catch (err) {
       console.log(`💥 ${(d.name || d.id).slice(0, 24).padEnd(24)} | ${(err as Error).message.slice(0, 90)}`)
     }

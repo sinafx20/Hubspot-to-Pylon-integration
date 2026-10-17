@@ -52,33 +52,33 @@ export async function hubspotWebhookRoute(fastify: FastifyInstance) {
     const checkStages = config.HUBSPOT_ADDRESS_CHECK_STAGES.split(',').map((s) => s.trim())
 
     for (const event of events) {
-      // Address check triggers (services/address.ts):
-      //  - deal created, or entered an early stage → pre-fill the Pylon address fields. Delayed,
-      //    because the form workflow copies the address onto the account a minute or so later.
-      //  - staff ticked "Re-check address"           → re-check now, and fix a wrong Pylon project
-      const isNewDeal = event.subscriptionType === 'deal.creation'
-      const isEarlyStage =
-        event.subscriptionType === 'deal.propertyChange' && event.propertyName === 'dealstage' && checkStages.includes(event.propertyValue ?? '')
-      const isRecheck =
-        event.subscriptionType === 'deal.propertyChange' &&
-        event.propertyName === config.HUBSPOT_ADDRESS_RECHECK_PROP &&
-        event.propertyValue === 'true'
-      if (isNewDeal || isEarlyStage || isRecheck) {
+      // Address check triggers (services/address.ts). The account (property) is the source of truth:
+      //  - account created, or its install_address changed → check that property's new address
+      //  - staff ticked "Re-check address" on an account     → re-check its corrected fields, and
+      //                                                        replace a Pylon project with a wrong address
+      //  - deal created, or entered an early stage           → check its not-yet-checked properties.
+      //    Delayed, because the form workflow copies the address onto the account a minute later.
+      const type = event.subscriptionType
+      const prop = event.propertyName
+      const isAccountAddress =
+        type === 'company.creation' || (type === 'company.propertyChange' && prop === 'install_address' && !!event.propertyValue)
+      const isAccountRecheck = type === 'company.propertyChange' && prop === config.HUBSPOT_ADDRESS_RECHECK_PROP && event.propertyValue === 'true'
+      const isDealCheck =
+        type === 'deal.creation' || (type === 'deal.propertyChange' && prop === 'dealstage' && checkStages.includes(event.propertyValue ?? ''))
+      if (isAccountAddress || isAccountRecheck || isDealCheck) {
         const eventId = `hs-${event.eventId}`
         if (await isEventProcessed(eventId)) continue
-        const trigger = isRecheck ? 'recheck' : 'stage'
-        await logEvent({ eventId, direction: 'hs_to_pylon', eventType: `address.${trigger}`, hubspotDealId: String(event.objectId), status: 'queued' })
-        await integrationQueue.add(
-          'check-address',
-          { dealId: String(event.objectId), eventId, trigger },
-          {
-            delay: trigger === 'stage' ? config.ADDRESS_CHECK_DELAY_MS : 0,
-            attempts: 5,
-            backoff: { type: 'exponential', delay: 5000 },
-            removeOnComplete: { count: 100 },
-            removeOnFail: false,
-          }
-        )
+        const id = String(event.objectId)
+        const jobOpts = { attempts: 5, backoff: { type: 'exponential' as const, delay: 5000 }, removeOnComplete: { count: 100 }, removeOnFail: false }
+        if (isDealCheck) {
+          await logEvent({ eventId, direction: 'hs_to_pylon', eventType: 'address.deal', hubspotDealId: id, status: 'queued' })
+          await integrationQueue.add('check-deal', { dealId: id, eventId }, { ...jobOpts, delay: config.ADDRESS_CHECK_DELAY_MS })
+        } else {
+          const trigger = isAccountRecheck ? 'recheck' : 'address'
+          await logEvent({ eventId, direction: 'hs_to_pylon', eventType: `address.${trigger}`, status: 'queued', errorMessage: `account ${id}` })
+          // A new account gets its install address from a workflow a moment later: give it time.
+          await integrationQueue.add('check-account', { companyId: id, eventId, trigger }, { ...jobOpts, delay: type === 'company.creation' ? 90_000 : 0 })
+        }
         continue
       }
 

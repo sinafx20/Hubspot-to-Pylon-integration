@@ -29,7 +29,7 @@ const env = z.object({
   // address onto the account) when a deal enters one of these stages.
   HUBSPOT_ADDRESS_CHECK_STAGES: z.string().default('3224932835,appointmentscheduled'),
   ADDRESS_CHECK_DELAY_MS: z.coerce.number().default(180_000),
-  // Deal checkbox staff tick to re-check the address (and replace a wrong Pylon project).
+  // Account checkbox staff tick to re-check its address (and replace a wrong Pylon project).
   HUBSPOT_ADDRESS_RECHECK_PROP: z.string().default('pylon_address_recheck'),
   // Matches outside these states fail the check (e.g. "Jones St" resolving to NSW).
   ADDRESS_ALLOWED_STATES: z.string().default('VIC'),

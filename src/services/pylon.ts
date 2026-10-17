@@ -64,7 +64,7 @@ export function buildSolarProjectPayload(
     throw new UnrecoverableError(
       `Address check failed for deal ${deal.id}${account ? ` (account ${account.id})` : ''}: ` +
         `${check.notes.filter((n) => n.startsWith('❌')).join(' ')} ` +
-        `Fix the Pylon address fields on the deal, then tick "Re-check address" or click Retry.`
+        `Fix the Pylon address fields on that account, then tick "Re-check address" or click Retry.`
     )
   }
   const c = contact?.properties

@@ -43,13 +43,9 @@ const DEAL_PROPS = [
   'closedate',
   'dealstage',
   'pipeline',
-  // Standardised site address, pre-filled by the address check and confirmed by staff
-  // (see services/address-sync.ts). Once filled, these are what Pylon receives.
-  'pylon_address_line1',
-  'pylon_address_unit',
-  'pylon_address_suburb',
-  'pylon_address_state',
-  'pylon_address_postcode',
+  // Read-only summary of the deal's property addresses + the Ready to quote confirmation.
+  'pylon_sites',
+  'pylon_addresses_confirmed',
 ].join(',')
 
 export interface HubSpotContact {
@@ -119,7 +115,12 @@ export async function getAssociatedContact(dealId: string): Promise<HubSpotConta
   return request<HubSpotContact>('GET', `/crm/v3/objects/contacts/${contactId}?properties=${CONTACT_PROPS}`)
 }
 
-const COMPANY_PROPS = ['name', 'install_address', 'address', 'city', 'state', 'zip', 'country', 'phone'].join(',')
+const COMPANY_PROPS = [
+  'name', 'install_address', 'address', 'city', 'state', 'zip', 'country', 'phone',
+  // The property's checked, standardised site address (services/address-sync.ts): what Pylon gets.
+  'address_check', 'address_check_notes', 'address_check_map',
+  'pylon_address_line1', 'pylon_address_unit', 'pylon_address_suburb', 'pylon_address_state', 'pylon_address_postcode',
+].join(',')
 
 export async function getAssociatedCompany(dealId: string): Promise<HubSpotCompany | null> {
   const assoc = await request<{ results: { id: string }[] }>(
@@ -151,6 +152,26 @@ export async function getAssociatedAccounts(dealId: string): Promise<AssociatedA
       return { company, primary }
     })
   )
+}
+
+export async function getCompany(companyId: string): Promise<HubSpotCompany> {
+  return request<HubSpotCompany>('GET', `/crm/v3/objects/companies/${companyId}?properties=${COMPANY_PROPS}`)
+}
+
+export async function updateCompanyProperties(companyId: string, properties: Record<string, string | number>): Promise<void> {
+  await request('PATCH', `/crm/v3/objects/companies/${companyId}`, { properties })
+}
+
+/** Deals an account (property) is on. */
+export async function getCompanyDealIds(companyId: string): Promise<string[]> {
+  const r = await request<{ results: { toObjectId: number }[] }>('GET', `/crm/v4/objects/companies/${companyId}/associations/deals`)
+  return r.results.map((x) => String(x.toObjectId))
+}
+
+/** Contacts on an account (property), with the contact properties the address check uses. */
+export async function getCompanyContacts(companyId: string): Promise<HubSpotContact[]> {
+  const r = await request<{ results: { toObjectId: number }[] }>('GET', `/crm/v4/objects/companies/${companyId}/associations/contacts`)
+  return Promise.all(r.results.map((x) => request<HubSpotContact>('GET', `/crm/v3/objects/contacts/${x.toObjectId}?properties=${CONTACT_PROPS}`)))
 }
 
 export async function updateDealStage(dealId: string, stageId: string): Promise<void> {
