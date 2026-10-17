@@ -162,7 +162,10 @@ async function step(name: string, isDone: () => Promise<boolean>, run: () => Pro
   if (!APPLY) return console.log(`${label}  WOULD RUN`)
 
   await run()
-  if (!(await isDone())) throw new Error(`${label}: ran but state check still fails, stopping here`)
+  // HubSpot search is eventually consistent, so give the state check time to catch up.
+  let done = false
+  for (let i = 0; i < 24 && !(done = await isDone()); i++) await new Promise((r) => setTimeout(r, 5000))
+  if (!done) throw new Error(`${label}: ran but state check still fails after 2 min, stopping here`)
   // Tripwire: workflows run async, so give them time, then confirm nothing was triggered.
   await new Promise((r) => setTimeout(r, SETTLE_MS))
   const now = await tripwire()
@@ -200,8 +203,16 @@ async function moveDeals(from: string, to: string) {
     })
   }
   // HubSpot auto-fills closedate on entry to a closed stage; clear it where it was empty before.
-  const blanks = new Set(deals.filter((d) => !d.properties.closedate).map((d) => d.id))
-  const stamped = (await dealsIn(to)).filter((d) => blanks.has(d.id) && d.properties.closedate)
+  // Read by id (consistent) rather than search (lags behind writes).
+  const blanks = deals.filter((d) => !d.properties.closedate).map((d) => d.id)
+  const stamped: Deal[] = []
+  for (let i = 0; i < blanks.length; i += 100) {
+    const r = await hs<{ results: Deal[] }>('POST', '/crm/v3/objects/deals/batch/read', {
+      inputs: blanks.slice(i, i + 100).map((id) => ({ id })),
+      properties: ['closedate'],
+    })
+    stamped.push(...r.results.filter((d) => d.properties.closedate))
+  }
   for (let i = 0; i < stamped.length; i += 100) {
     await hs('POST', '/crm/v3/objects/deals/batch/update', {
       inputs: stamped.slice(i, i + 100).map((d) => ({ id: d.id, properties: { closedate: '' } })),
@@ -227,6 +238,10 @@ async function main() {
   const fresh =
     byId('contractsent')?.label === READY && byId('closedwon')?.label === QUOTE_SENT && byId('closedlost')?.label === WON && byId(OLD_LOST)?.label === LOST
   const partial = s0.some((s) => !KNOWN.includes(s.id) && s.label.startsWith(READY))
+  // Once finished, the widen-then-narrow workflow steps would look undone; never re-run them.
+  if (APPLY && !byId(OLD_LOST) && byId('contractsent')?.label === QUOTE_SENT && byId('closedwon')?.label === WON) {
+    throw new Error('Migration already complete (old lost stage deleted, labels final); refusing to run --apply again')
+  }
   if (!fresh && !partial) throw new Error('Pipeline is in neither the original nor a partially-migrated state; inspect manually')
 
   const snapPath = path.join(__dirname, '../stage-remap-snapshot.local.json')
