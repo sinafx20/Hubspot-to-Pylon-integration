@@ -61,8 +61,11 @@ const clean = (v?: string | null) => (v ?? '').trim() || undefined
 
 /** From the raw HubSpot single-line install address plus any separate postcode fields. */
 export function inputFromRaw(line: string, zips: (string | null | undefined)[], source: string): AddressInput {
-  const { unit, street } = parseUnit(line)
-  const postcodes = [extractPostcode(line), ...zips.map(cleanPostcode)].filter((p): p is string => !!p)
+  const tidy = line
+    .replace(/([a-z])\.([a-z])/gi, '$1 $2') // "dr.hopper crossing" → "dr hopper crossing"
+    .replace(/^(\s*\d+)\s+([a-z])\s+(?=[a-z]{3,})/i, '$1$2 ') // "57 b huntingfield" → "57b huntingfield"
+  const { unit, street } = parseUnit(tidy)
+  const postcodes = [extractPostcode(tidy), ...zips.map(cleanPostcode)].filter((p): p is string => !!p)
   return { street: normalizeAddressLine(street), unit, postcodes: [...new Set(postcodes)], source }
 }
 
@@ -174,11 +177,13 @@ async function openStreetMap(input: AddressInput, typedNumber?: string): Promise
 const STREET_TYPES = new Set(
   ('st street rd road ave av avenue dr drive ct court cres crescent cct circuit cl close blvd bvd boulevard pl place ' +
     'ln lane pde parade tce terrace way gr grove hwy highway tr trail sq square esp esplanade rise loop mews walk row ' +
-    'chase glade gdns gardens link vista view ridge track pkwy parkway').split(' ')
+    'chase glade gdns gardens link vista view ridge track pkwy parkway crt cr drv blv ride wynd cove').split(' ')
 )
-const NOISE = new Set('vic victoria au aus australia melbourne unit u apt flat lot'.split(' '))
+const NOISE = new Set(
+  ('vic victoria qld queensland nsw sa wa tas nt act au aus australia melbourne unit u apt flat lot').split(' ')
+)
 
-const tokens = (s?: string) => (s ?? '').toLowerCase().match(/[a-z0-9]+/g) ?? []
+const tokens = (s?: string): string[] => (s ?? '').toLowerCase().match(/[a-z0-9]+/g) ?? []
 const core = (s?: string) => tokens(s).filter((t) => !STREET_TYPES.has(t) && !NOISE.has(t) && !/^\d+[a-z]?$/.test(t))
 
 function editDistance(a: string, b: string): number {
@@ -200,6 +205,26 @@ function inRange(n: string, range: string): boolean {
 }
 
 const sameNumber = (typed: string, found: string) => typed.toLowerCase() === found.toLowerCase() || inRange(typed, found)
+
+/** The state an AU postcode belongs to (ACT ranges carved out of NSW's). */
+function postcodeState(pc?: string): string | undefined {
+  if (!pc) return undefined
+  const n = parseInt(pc, 10)
+  if ((n >= 2600 && n <= 2618) || (n >= 2900 && n <= 2920) || (n >= 200 && n <= 299)) return 'ACT'
+  if (n >= 800 && n <= 999) return 'NT'
+  return { '1': 'NSW', '2': 'NSW', '3': 'VIC', '4': 'QLD', '5': 'SA', '6': 'WA', '7': 'TAS', '8': 'VIC', '9': 'QLD' }[pc[0]]
+}
+
+/** The state the customer gave: a state field, a state word in the line, or else their postcode. */
+function typedState(input: AddressInput): string | undefined {
+  if (input.state) return stateAbbr(input.state)
+  const words = tokens(input.street)
+  const named = ['vic', 'qld', 'nsw', 'sa', 'wa', 'tas', 'nt', 'act'].find((w) => words.includes(w))
+  if (named) return named.toUpperCase()
+  if (words.includes('victoria')) return 'VIC'
+  if (words.includes('queensland')) return 'QLD'
+  return postcodeState(input.postcodes[0])
+}
 
 const titleCase = (s: string) => s.toLowerCase().replace(/\b[a-z]/g, (c) => c.toUpperCase())
 
@@ -251,7 +276,12 @@ export async function checkAddress(input: AddressInput): Promise<AddressCheck> {
   if (input.street && !typedNumber) fail('The address has no street number.')
 
   if (match) {
-    if (match.state && !allowedStates.includes(match.state)) {
+    // The match must be in the state the customer gave (or their postcode's state); with nothing
+    // given, in one of the states RevoluSun works in.
+    const expected = typedState(input)
+    if (match.state && expected && match.state !== expected) {
+      fail(`The closest match is in ${match.state}, but the address given is in ${expected}, so it's probably the wrong place.`)
+    } else if (match.state && !expected && !allowedStates.includes(match.state)) {
       fail(`The closest match is in ${match.state}, not ${allowedStates.join('/')}, so it's probably the wrong place.`)
     }
     if (typedNumber && match.streetNumber && !sameNumber(typedNumber, match.streetNumber)) {
@@ -296,6 +326,11 @@ export async function checkAddress(input: AddressInput): Promise<AddressCheck> {
     }
   }
 
+  // Pylon rejects a project without a suburb: if neither the match nor the customer gave one, fail.
+  const matchedSuburb = match?.suburb ?? input.suburb ?? suburbGuess(splitStreet(input.street).rest)
+  if (match && !matchedSuburb) fail("The suburb couldn't be worked out from the address.")
+  if (match && !match.suburb && matchedSuburb) warn(`The map didn't return a suburb, so "${matchedSuburb}" was taken from what was typed.`)
+
   const grade: Grade = notes.some((n) => n.level === 'failed') ? 'failed' : notes.some((n) => n.level === 'check') ? 'check' : 'verified'
 
   // Standardised fields: from the match where we have one, else what was typed (for staff to fix).
@@ -305,7 +340,7 @@ export async function checkAddress(input: AddressInput): Promise<AddressCheck> {
       ? {
           line1: `${number} ${match.street}`,
           unit: input.unit ?? match.unit ?? '',
-          suburb: match.suburb ?? input.suburb ?? '',
+          suburb: matchedSuburb ?? '',
           state: match.state ?? input.state ?? '',
           postcode: match.postcode ?? input.postcodes[0] ?? '',
         }
@@ -314,7 +349,7 @@ export async function checkAddress(input: AddressInput): Promise<AddressCheck> {
           unit: input.unit ?? '',
           // Failed: pre-fill only what was TYPED, never details from a match we don't trust.
           suburb: input.suburb ?? suburbGuess(splitStreet(input.street).rest) ?? '',
-          state: input.state ?? allowedStates[0] ?? '',
+          state: typedState(input) ?? '',
           postcode: input.postcodes[0] ?? '',
         }
 

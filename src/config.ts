@@ -31,8 +31,9 @@ const env = z.object({
   ADDRESS_CHECK_DELAY_MS: z.coerce.number().default(180_000),
   // Account checkbox staff tick to re-check its address (and replace a wrong Pylon project).
   HUBSPOT_ADDRESS_RECHECK_PROP: z.string().default('pylon_address_recheck'),
-  // Matches outside these states fail the check (e.g. "Jones St" resolving to NSW).
-  ADDRESS_ALLOWED_STATES: z.string().default('VIC'),
+  // A match must be in the state the customer typed (or their postcode's state). When they gave
+  // neither, it must be in one of these states (e.g. "Jones St" resolving to NSW fails).
+  ADDRESS_ALLOWED_STATES: z.string().default('VIC,QLD'),
   // Optional: Google Geocoding is used first when set; OpenStreetMap is the fallback.
   GOOGLE_MAPS_API_KEY: z.string().optional(),
 
