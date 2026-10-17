@@ -7,6 +7,7 @@
  *
  *   npx tsx scripts/backfill-address-checks.ts            (dry run: grades only, no writes)
  *   npx tsx scripts/backfill-address-checks.ts --apply
+ *   npx tsx scripts/backfill-address-checks.ts --regrade [--apply]   also re-check unconfirmed ⚠️/❌
  */
 import fs from 'fs'
 import path from 'path'
@@ -25,6 +26,8 @@ for (const k of ['DATABASE_URL', 'REDIS_URL', 'HUBSPOT_CLIENT_SECRET', 'HUBSPOT_
 process.env.HUBSPOT_PIPELINE_ID ??= 'default'
 
 const APPLY = process.argv.includes('--apply')
+// Re-check accounts graded ⚠️/❌ that staff haven't confirmed (e.g. after adding the Google key).
+const REGRADE = process.argv.includes('--regrade')
 const OPEN_STAGES = ['3224932835', 'appointmentscheduled', 'qualifiedtobuy', 'presentationscheduled', '3966894582', 'contractsent']
 
 async function main() {
@@ -51,6 +54,7 @@ async function main() {
   const namesPath = path.join(__dirname, '../backfill-names.local.json')
   const oldNames: Record<string, string> = fs.existsSync(namesPath) ? JSON.parse(fs.readFileSync(namesPath, 'utf-8')) : {}
   const counts = { verified: 0, check: 0, failed: 0, skipped: 0, contactOnly: 0, filledFromContact: 0, errors: 0 }
+  const moves: Record<string, number> = {}
   const done = new Set<string>()
 
   for (const d of deals) {
@@ -66,12 +70,28 @@ async function main() {
       for (const { company } of sites) {
         if (done.has(company.id)) continue
         done.add(company.id)
-        if (sync.accountHasFields(company)) {
+        const p = company.properties
+        const before = p.address_check ?? 'none'
+        const confirmed = (p.address_check_notes ?? '').includes('Confirmed on re-check')
+        const regrade = REGRADE && (before === 'check' || before === 'failed') && !confirmed
+        if (sync.accountHasFields(company) && !regrade) {
           counts.skipped++
           continue
         }
-        const check = await sync.runCheck(sync.rawInput(company, sync.contactForAccount(company, [contact])))
+        // Re-check from the raw install address, unless a person edited the Pylon fields by hand.
+        let input = sync.rawInput(company, sync.contactForAccount(company, [contact]))
+        if (regrade) {
+          const h: any = await (
+            await fetch(`https://api.hubapi.com/crm/v3/objects/companies/${company.id}?propertiesWithHistory=pylon_address_line1,pylon_address_suburb,pylon_address_postcode`, {
+              headers: { Authorization: `Bearer ${token}` },
+            })
+          ).json()
+          const byHand = Object.values(h.propertiesWithHistory ?? {}).some((hist: any) => hist[0]?.sourceType === 'CRM_UI')
+          if (byHand) input = sync.accountInput(company, sync.contactForAccount(company, [contact]))
+        }
+        const check = await sync.runCheck(input)
         counts[check.grade]++
+        if (regrade) moves[`${before} → ${check.grade}`] = (moves[`${before} → ${check.grade}`] ?? 0) + 1
         const mark = { verified: '✅', check: '⚠️ ', failed: '❌' }[check.grade]
         console.log(`${mark} ${d.name.slice(0, 22).padEnd(22)} ${(company.properties.install_address ?? '').slice(0, 40).padEnd(40)} → ${formatAddress(check.fields)}`)
         if (APPLY) {
@@ -87,6 +107,7 @@ async function main() {
     }
   }
   console.log(`\n${JSON.stringify(counts)}`)
+  if (REGRADE) console.log(`re-graded: ${JSON.stringify(moves)}`)
   if (APPLY) console.log(`Old account names saved to ${path.basename(namesPath)}`)
   process.exit(0)
 }

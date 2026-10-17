@@ -226,6 +226,13 @@ function typedState(input: AddressInput): string | undefined {
   return postcodeState(input.postcodes[0])
 }
 
+/** Words of a suburb name for comparison: Saint→St, Mount→Mt, without state/postcode noise. */
+function suburbWords(s?: string): string[] {
+  return tokens(s)
+    .map((t) => (t === 'saint' ? 'st' : t === 'mount' ? 'mt' : t))
+    .filter((t) => !NOISE.has(t) && !/^\d+[a-z]?$/.test(t))
+}
+
 const titleCase = (s: string) => s.toLowerCase().replace(/\b[a-z]/g, (c) => c.toUpperCase())
 
 /**
@@ -267,7 +274,13 @@ export async function checkAddress(input: AddressInput): Promise<AddressCheck> {
       info(`Google lookup unavailable (${(err as Error).message}), used OpenStreetMap instead.`)
     }
   }
-  if (!match && input.street) match = await openStreetMap(input, typedNumber)
+  // Google only found the street or suburb: OpenStreetMap sometimes knows the house (new streets).
+  // Keep whichever result is more precise.
+  if (input.street && (!match || match.precision === 'street' || match.precision === 'area')) {
+    const osm = await openStreetMap(input, typedNumber)
+    const rank: Precision[] = ['exact', 'estimated', 'street', 'area']
+    if (osm && (!match || rank.indexOf(osm.precision) < rank.indexOf(match.precision))) match = osm
+  }
 
   const allowedStates = config.ADDRESS_ALLOWED_STATES.split(',').map((s) => s.trim().toUpperCase())
 
@@ -299,12 +312,16 @@ export async function checkAddress(input: AddressInput): Promise<AddressCheck> {
       warn(`Street matched as "${match.street}", which differs from what was typed.`)
     }
 
-    // Suburb: whatever words are left after the number and street name.
-    const leftover = [...core(input.street).filter((t) => !roadCore.some((r) => similar(t, r))), ...core(input.suburb)]
-    const suburbCore = core(match.suburb)
+    // Suburb: whatever words are left after the number and street name. Saint/St and Mount/Mt are
+    // the same, and "bonnieebrook" is "Bonnie Brook" with the space missing.
+    const { rest } = splitStreet(input.street)
+    const typedSuburb = rest || input.street.replace(/^\S+\s+/, '')
+    const leftover = suburbWords(`${typedSuburb} ${input.suburb ?? ''}`).filter((t) => rest || !roadCore.some((r) => similar(t, r)))
+    const suburbCore = suburbWords(match.suburb)
     const suburbGiven = leftover.length > 0
-    const suburbFull = suburbCore.length > 0 && suburbCore.every((t) => leftover.some((x) => similar(x, t)))
-    const suburbSome = suburbCore.some((t) => leftover.some((x) => similar(x, t)))
+    const joinedMatch = similar(leftover.join(''), suburbCore.join('')) || leftover.join('').includes(suburbCore.join(''))
+    const suburbFull = suburbCore.length > 0 && (suburbCore.every((t) => leftover.some((x) => similar(x, t))) || joinedMatch)
+    const suburbSome = suburbFull || suburbCore.some((t) => leftover.some((x) => similar(x, t)))
     if (suburbFull && !suburbCore.every((t) => leftover.includes(t))) info(`Suburb spelling corrected to ${match.suburb}.`)
     if (suburbGiven && !suburbFull) {
       warn(suburbSome ? `Suburb matched as ${match.suburb}, slightly different from what was typed.` : `Typed suburb doesn't match the address found (${match.suburb}).`)
@@ -316,7 +333,7 @@ export async function checkAddress(input: AddressInput): Promise<AddressCheck> {
       if (pcs.includes(match.postcode)) {
         const others = pcs.filter((p) => p !== match!.postcode)
         if (others.length) warn(`Customer gave more than one postcode (${pcs.join(', ')}); ${match.postcode} matches the address.`)
-      } else if (suburbFull) {
+      } else if (suburbSome) {
         warn(`Typed postcode ${pcs.join('/')} doesn't belong to ${match.suburb}; using ${match.postcode}.`)
       } else {
         fail(`Typed postcode ${pcs.join('/')} doesn't match the address found (${match.suburb ?? ''} ${match.postcode}).`)
