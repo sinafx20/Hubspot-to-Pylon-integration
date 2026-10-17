@@ -105,6 +105,27 @@ export async function writeCheckToAccount(account: HubSpotCompany, check: Addres
   Object.assign(account.properties, props)
 }
 
+/**
+ * If NONE of the deal's accounts has an install address but the contact does, the contact's
+ * address belongs to the deal's account: copy it onto the deal's primary account (or its only
+ * account). This covers accounts created without the address (manual form, or by hand), which the
+ * contact-to-primary-account workflow can't reach. Never runs when any account already has an
+ * address, so one property's address can't land on another. Returns the filled account, if any.
+ */
+export async function fillEmptyAccountFromContact(
+  accounts: { company: HubSpotCompany; primary: boolean }[],
+  contact: HubSpotContact | null
+): Promise<HubSpotCompany | null> {
+  const line = clean(contact?.properties.install_address)
+  if (!line || !accounts.length || accounts.some((a) => isSite(a.company))) return null
+  const target = accounts.find((a) => a.primary)?.company ?? (accounts.length === 1 ? accounts[0].company : null)
+  if (!target) return null
+  await updateCompanyProperties(target.id, { install_address: line })
+  target.properties.install_address = line
+  console.log(`[address] Account ${target.id} had no install address: copied the contact's "${line}"`)
+  return target
+}
+
 const ICON: Record<Grade, string> = { verified: '✅', check: '⚠️', failed: '❌' }
 const RANK: Grade[] = ['failed', 'check', 'verified']
 
@@ -131,11 +152,21 @@ export async function refreshDealSummary(dealId: string): Promise<void> {
     lines.push(`${ICON[grade]} ${address}${primary ? ' (primary)' : ''}${reason}`)
   }
 
-  if (!sites.length) {
-    // Contact-only deal: summarise the contact's line, checked on the fly.
+  // Accounts on the deal with no install address are properties nobody can check yet: say so,
+  // rather than letting the deal look verified from the contact's address.
+  for (const { company } of accounts.filter((a) => !isSite(a.company))) {
+    if (sites.length) continue // a multi-property deal can carry non-property accounts (e.g. a business)
+    grades.push('check')
+    lines.push(`⚠️ ${company.properties.name || `Account ${company.id}`} has no install address. Fill in its "Address as entered" or Pylon address fields`)
+  }
+
+  if (!accounts.length) {
+    // No property account at all: summarise the contact's line, but never better than ⚠️, so staff
+    // add an account (one account per property is what Pylon projects are made from).
     const check = await runCheck(rawInput(null, contact))
-    grades.push(check.grade)
-    lines.push(`${ICON[check.grade]} ${formatAddress(check.fields) || 'No install address'} (from the contact, no property account)`)
+    const grade: Grade = check.grade === 'failed' ? 'failed' : 'check'
+    grades.push(grade)
+    lines.push(`${ICON[grade]} ${formatAddress(check.fields) || 'No install address'} (from the contact; add a property account to this deal)`)
   }
 
   const worst = RANK.find((g) => grades.includes(g)) ?? ''

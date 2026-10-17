@@ -1,6 +1,6 @@
 import { getDeal, getAssociatedContact, getAssociatedAccounts, updateDealProperties, type HubSpotCompany } from '../services/hubspot'
 import { createSolarProject } from '../services/pylon'
-import { accountInput, contactForAccount, rawInput, refreshDealSummary, runCheck, writeCheckToAccount } from '../services/address-sync'
+import { accountInput, contactForAccount, fillEmptyAccountFromContact, rawInput, refreshDealSummary, runCheck, writeCheckToAccount } from '../services/address-sync'
 import { formatAddress, type AddressCheck } from '../services/address'
 import { saveLink, getLinkByDealAccount, hasPrimaryLink } from '../db/links'
 import { logEvent } from '../db/events'
@@ -30,6 +30,12 @@ export async function handleCreatePylonProject({ dealId, eventId, clearSyncFlag 
     getAssociatedContact(dealId),
     getAssociatedAccounts(dealId),
   ])
+
+  // An account created without its address (manual form, or by hand) gets the contact's, so the
+  // project is made from the account rather than falling back to a contact-only project.
+  await fillEmptyAccountFromContact(accounts, contact).catch((err) =>
+    console.error(`[create-pylon-project] Could not fill the empty account from the contact: ${err.message}`)
+  )
 
   // Accounts that actually carry an install address are the property sites to sync.
   const withAddress = accounts.filter((a) => (a.company.properties.install_address ?? '').trim())

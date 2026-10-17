@@ -1,6 +1,7 @@
 /**
  * Fill the address check on the accounts (properties) of every open deal, and refresh each deal's
- * "Pylon sites" summary. Accounts that already have a check are left alone, so it's safe to re-run.
+ * "Pylon sites" summary. A deal whose accounts all lack an install address gets the contact's
+ * copied onto its account first (as the integration now does for new deals). Accounts that already have a check are left alone, so it's safe to re-run.
  * Never touches Pylon, install addresses or deal stages. Before writing, saves each account's
  * current name to backfill-names.local.json so the renames can be undone.
  *
@@ -49,12 +50,17 @@ async function main() {
 
   const namesPath = path.join(__dirname, '../backfill-names.local.json')
   const oldNames: Record<string, string> = fs.existsSync(namesPath) ? JSON.parse(fs.readFileSync(namesPath, 'utf-8')) : {}
-  const counts = { verified: 0, check: 0, failed: 0, skipped: 0, contactOnly: 0, errors: 0 }
+  const counts = { verified: 0, check: 0, failed: 0, skipped: 0, contactOnly: 0, filledFromContact: 0, errors: 0 }
   const done = new Set<string>()
 
   for (const d of deals) {
     try {
       const [accounts, contact] = await Promise.all([hs.getAssociatedAccounts(d.id), hs.getAssociatedContact(d.id)])
+      if (!accounts.some((a) => sync.isSite(a.company)) && contact?.properties.install_address?.trim()) {
+        counts.filledFromContact++
+        if (APPLY) await sync.fillEmptyAccountFromContact(accounts, contact)
+        else console.log(`↪  ${d.name.slice(0, 22).padEnd(22)} would copy the contact's "${contact.properties.install_address}" onto its empty account`)
+      }
       const sites = accounts.filter((a) => sync.isSite(a.company))
       if (!sites.length) counts.contactOnly++
       for (const { company } of sites) {

@@ -11,7 +11,7 @@ import {
   type HubSpotContact,
 } from '../services/hubspot'
 import { createSolarProject, getSolarProject, archiveSolarProject, referenceFor } from '../services/pylon'
-import { accountHasFields, accountInput, contactForAccount, isSite, rawInput, refreshDealSummary, runCheck, writeCheckToAccount } from '../services/address-sync'
+import { accountHasFields, accountInput, contactForAccount, fillEmptyAccountFromContact, isSite, rawInput, refreshDealSummary, runCheck, writeCheckToAccount } from '../services/address-sync'
 import { formatAddress, type AddressCheck } from '../services/address'
 import { getLinkByDealAccount, saveLink } from '../db/links'
 import { logEvent } from '../db/events'
@@ -97,6 +97,7 @@ export async function handleCheckDeal(job: DealJob) {
 
 async function checkDeal({ dealId, eventId }: DealJob) {
   const [accounts, contact] = await Promise.all([getAssociatedAccounts(dealId), getAssociatedContact(dealId)])
+  await fillEmptyAccountFromContact(accounts, contact)
   for (const { company } of accounts) {
     if (!isSite(company) || accountHasFields(company)) continue
     const check = await runCheck(rawInput(company, contactForAccount(company, [contact])))
