@@ -64,7 +64,6 @@ async function checkAccount({ companyId, eventId, trigger }: AccountJob) {
 
   const outcomes: string[] = []
   if (trigger === 'recheck') {
-    await updateCompanyProperties(companyId, { [config.HUBSPOT_ADDRESS_RECHECK_PROP]: 'false' })
     for (const dealId of dealIds) {
       const outcome = await fixPylonProjectIfNeeded(dealId, account, check)
       if (outcome) outcomes.push(outcome)
@@ -76,6 +75,8 @@ async function checkAccount({ companyId, eventId, trigger }: AccountJob) {
     )
   }
   for (const dealId of dealIds) await refreshDealSummary(dealId)
+  // Untick last, so "box unticked" means the account AND its deals are fully up to date.
+  if (trigger === 'recheck') await updateCompanyProperties(companyId, { [config.HUBSPOT_ADDRESS_RECHECK_PROP]: 'false' })
 
   await logEvent({
     eventId,
