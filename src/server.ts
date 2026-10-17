@@ -3,7 +3,7 @@ import { config } from './config'
 import { hubspotWebhookRoute } from './webhooks/hubspot'
 import { pylonWebhookRoute } from './webhooks/pylon'
 import { dashboardRoute } from './admin/dashboard'
-import { startWorker } from './queue/worker'
+import { startWorker, startRecheckSweep } from './queue/worker'
 import { listPipelines } from './services/hubspot'
 
 /**
@@ -72,6 +72,7 @@ const start = async () => {
       server.log.warn('PAUSE_WORKER=true: webhooks are queued but not processed')
     } else if (await stageConfigIsValid()) {
       startWorker()
+      startRecheckSweep()
     }
     server.log.info(`Integration service running on port ${config.PORT}`)
   } catch (err) {

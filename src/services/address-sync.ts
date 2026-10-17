@@ -82,8 +82,29 @@ export async function runCheck(input: AddressInput | null): Promise<AddressCheck
   }
 }
 
-/** Write the check onto the account and keep the in-memory copy in step with what was written. */
-export async function writeCheckToAccount(account: HubSpotCompany, check: AddressCheck): Promise<void> {
+const CONFIRMED = 'Confirmed on re-check'
+
+/** Staff re-checked the address: remaining ⚠️ doubts are accepted, so it's ✅ (❌ never is). */
+function confirmCheck(check: AddressCheck): AddressCheck {
+  if (check.grade !== 'check') return check
+  return {
+    ...check,
+    grade: 'verified',
+    notes: check.notes.map((n) => (n.startsWith('⚠️') ? `ℹ️ ${CONFIRMED}: ${n.slice(2).trim()}` : n)),
+  }
+}
+
+const fieldsOf = (p: HubSpotCompany['properties']) =>
+  formatAddress({ line1: p[A.line1] ?? '', unit: p[A.unit] ?? '', suburb: p[A.suburb] ?? '', state: p[A.state] ?? '', postcode: p[A.postcode] ?? '' })
+
+/**
+ * Write the check onto the account and keep the in-memory copy in step with what was written.
+ * With `confirm` (staff ticked Re-check), a ⚠️ becomes ✅. A confirmation sticks on later checks
+ * (e.g. at Ready to quote) as long as the address itself hasn't changed. Returns what was written.
+ */
+export async function writeCheckToAccount(account: HubSpotCompany, original: AddressCheck, opts: { confirm?: boolean } = {}): Promise<AddressCheck> {
+  const wasConfirmed = (account.properties[A.notes] ?? '').includes(CONFIRMED) && fieldsOf(account.properties) === formatAddress(original.fields)
+  const check = opts.confirm || wasConfirmed ? confirmCheck(original) : original
   const stamp = new Date().toLocaleString('en-AU', { timeZone: 'Australia/Melbourne', dateStyle: 'medium', timeStyle: 'short' })
   const props: Record<string, string> = {
     [A.grade]: check.grade,
@@ -103,6 +124,7 @@ export async function writeCheckToAccount(account: HubSpotCompany, check: Addres
   }
   await updateCompanyProperties(account.id, props)
   Object.assign(account.properties, props)
+  return check
 }
 
 /**

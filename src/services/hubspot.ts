@@ -162,6 +162,16 @@ export async function updateCompanyProperties(companyId: string, properties: Rec
   await request('PATCH', `/crm/v3/objects/companies/${companyId}`, { properties })
 }
 
+/** Ids of accounts (companies) where a property has a given value, e.g. the Re-check box ticked. */
+export async function searchCompanyIds(property: string, value: string): Promise<string[]> {
+  const r = await request<{ results: { id: string }[] }>('POST', '/crm/v3/objects/companies/search', {
+    filterGroups: [{ filters: [{ propertyName: property, operator: 'EQ', value }] }],
+    properties: ['name'],
+    limit: 100,
+  })
+  return r.results.map((x) => x.id)
+}
+
 /** Deals an account (property) is on. */
 export async function getCompanyDealIds(companyId: string): Promise<string[]> {
   const r = await request<{ results: { toObjectId: number }[] }>('GET', `/crm/v4/objects/companies/${companyId}/associations/deals`)

@@ -54,8 +54,12 @@ async function checkAccount({ companyId, eventId, trigger }: AccountJob) {
 
   const contact = contactForAccount(account, contacts)
   // A changed install address is a new raw address; a re-check verifies the corrected fields.
-  const check = await runCheck(trigger === 'recheck' ? accountInput(account, contact) : rawInput(account, contact))
-  await writeCheckToAccount(account, check)
+  // A re-check is staff confirming the address: remaining ⚠️ doubts are accepted (❌ still blocks).
+  const check = await writeCheckToAccount(
+    account,
+    await runCheck(trigger === 'recheck' ? accountInput(account, contact) : rawInput(account, contact)),
+    { confirm: trigger === 'recheck' }
+  )
   console.log(`[check-account] Account ${companyId} (${trigger}): ${check.grade} → ${formatAddress(check.fields)}`)
 
   const outcomes: string[] = []
