@@ -57,10 +57,11 @@ export async function handleCreatePylonProject({ dealId, eventId, clearSyncFlag 
     }
     const isPrimary = accountId === anchorAccountId && !(await hasPrimaryLink(dealId))
     const check = await runCheck(account ? accountInput(account, contactForAccount(account, [contact])) : rawInput(null, contact))
-    if (account) await writeCheckToAccount(account, check)
+    // Showing the result on the account is best-effort: it must never block the Pylon project.
+    if (account) await writeCheckToAccount(account, check).catch((err) => console.error(`[create-pylon-project] Could not write address check to account ${account.id}: ${err.message}`))
     pending.push({ account, isPrimary, check })
   }
-  await refreshDealSummary(dealId)
+  await refreshDealSummary(dealId).catch((err) => console.error(`[create-pylon-project] Could not refresh address summary on deal ${dealId}: ${err.message}`))
 
   const failed = pending.filter((p) => p.check.grade === 'failed')
   if (failed.length) {

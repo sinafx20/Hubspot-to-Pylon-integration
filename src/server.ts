@@ -35,8 +35,10 @@ async function stageConfigIsValid(): Promise<boolean> {
     )
     return true
   } catch (err) {
-    server.log.error(`Worker NOT started, could not verify stage config: ${(err as Error).message}`)
-    return false
+    // Only a confirmed MISMATCH holds the worker. If the check itself can't run (e.g. a missing
+    // scope), start anyway rather than stalling every sync, and say so loudly.
+    server.log.warn(`Could not verify stage config, starting worker anyway: ${(err as Error).message}`)
+    return true
   }
 }
 
