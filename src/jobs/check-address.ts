@@ -19,6 +19,17 @@ import { config } from '../config'
 
 const GRADE_LABEL = { verified: '✅ Verified', check: '⚠️ Check', failed: '❌ Failed' }
 
+// A deal/account deleted or merged before its (delayed) check runs: nothing to do, not a failure.
+const isNotFound = (err: unknown) => /→ 404/.test((err as Error)?.message ?? '')
+async function skipIfDeleted(what: string, work: () => Promise<void>) {
+  try {
+    await work()
+  } catch (err) {
+    if (!isNotFound(err)) throw err
+    console.log(`[check-address] ${what} no longer exists (deleted or merged), skipping`)
+  }
+}
+
 interface AccountJob {
   companyId: string
   eventId: string
@@ -29,7 +40,11 @@ interface AccountJob {
 }
 
 /** Check one account (property) and refresh the summary on every deal it's on. */
-export async function handleCheckAccount({ companyId, eventId, trigger }: AccountJob) {
+export async function handleCheckAccount(job: AccountJob) {
+  await skipIfDeleted(`Account ${job.companyId}`, () => checkAccount(job))
+}
+
+async function checkAccount({ companyId, eventId, trigger }: AccountJob) {
   const [account, contacts, dealIds] = await Promise.all([getCompany(companyId), getCompanyContacts(companyId), getCompanyDealIds(companyId)])
 
   if (trigger === 'address' && !account.properties.install_address?.trim()) {
@@ -76,7 +91,11 @@ interface DealJob {
  * A deal was created or entered an early stage: check any of its properties that haven't been
  * checked yet (never overwriting checked/corrected ones), then refresh the deal's summary.
  */
-export async function handleCheckDeal({ dealId, eventId }: DealJob) {
+export async function handleCheckDeal(job: DealJob) {
+  await skipIfDeleted(`Deal ${job.dealId}`, () => checkDeal(job))
+}
+
+async function checkDeal({ dealId, eventId }: DealJob) {
   const [accounts, contact] = await Promise.all([getAssociatedAccounts(dealId), getAssociatedContact(dealId)])
   for (const { company } of accounts) {
     if (!isSite(company) || accountHasFields(company)) continue

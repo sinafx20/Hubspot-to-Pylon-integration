@@ -72,7 +72,10 @@ export async function hubspotWebhookRoute(fastify: FastifyInstance) {
         const jobOpts = { attempts: 5, backoff: { type: 'exponential' as const, delay: 5000 }, removeOnComplete: { count: 100 }, removeOnFail: false }
         if (isDealCheck) {
           await logEvent({ eventId, direction: 'hs_to_pylon', eventType: 'address.deal', hubspotDealId: id, status: 'queued' })
-          await integrationQueue.add('check-deal', { dealId: id, eventId }, { ...jobOpts, delay: config.ADDRESS_CHECK_DELAY_MS })
+          // Creation and entering an early stage arrive together: one check per deal per 10 minutes.
+          // (Not a fixed id, because the queue keeps finished jobs and would block later checks.)
+          const jobId = `check-deal-${id}-${Math.floor(Date.now() / 600_000)}`
+          await integrationQueue.add('check-deal', { dealId: id, eventId }, { ...jobOpts, delay: config.ADDRESS_CHECK_DELAY_MS, jobId })
         } else {
           const trigger = isAccountRecheck ? 'recheck' : 'address'
           await logEvent({ eventId, direction: 'hs_to_pylon', eventType: `address.${trigger}`, status: 'queued', errorMessage: `account ${id}` })
